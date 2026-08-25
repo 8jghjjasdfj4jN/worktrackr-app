@@ -11,11 +11,34 @@ import React, { useEffect, useMemo, useState } from 'react';
 import DatePicker from './DatePicker.jsx';
 import {
   CalendarCheck, Check, X, Plus, Trash2, Loader2, AlertCircle, Save, Users, Settings as SettingsIcon, Palmtree,
+  ArrowLeft, Pencil, CalendarDays, Sliders,
 } from 'lucide-react';
 import PageHero, { HeroButtonOutline } from './PageHero.jsx';
 
 const DOW = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 const ukDate = (d) => (d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
+
+// A holiday date is a plain calendar day, but the API hands it back as a full
+// timestamp. NEVER use toISOString()/String().slice(0,10) on it — under British
+// Summer Time that shifts local midnight back a day, so 10 Aug is read as
+// 9 Aug and an edit would silently move someone's holiday. Build the
+// YYYY-MM-DD from LOCAL getters instead. Falsy input must be guarded too:
+// new Date(null) is the 1970 epoch, not an invalid date.
+const ymdLocal = (d) => {
+  if (!d) return '';
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.slice(0, 10)) && !d.includes('T')) return d.slice(0, 10);
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`;
+};
+
+const STATUS_PILL = {
+  approved: { label: 'Approved', cls: 'bg-[rgba(16,185,129,0.18)] text-[#6ee7b7]' },
+  pending:  { label: 'Awaiting approval', cls: 'bg-[rgba(245,158,11,0.20)] text-[#fcd34d]' },
+  rejected: { label: 'Rejected', cls: 'bg-[rgba(239,68,68,0.20)] text-[#fca5a5]' },
+  cancelled:{ label: 'Cancelled', cls: 'bg-[#2e2e4a] text-[#94a3b8]' },
+};
 const fmt = (n) => {
   const s = (Math.round(Number(n) * 2) / 2).toFixed(1);
   return s.endsWith('.0') ? s.slice(0, -2) : s;
@@ -31,6 +54,10 @@ export default function HolidayManager() {
   const [year, setYear] = useState({ yearStart: null, yearEnd: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // When set, we show that one person's full booking history instead of the
+  // tabs. Held as a user id (not the person object) so a reload after an edit
+  // re-reads fresh balances rather than showing a stale copy.
+  const [viewUserId, setViewUserId] = useState(null);
 
   const loadAll = async () => {
     try {
@@ -69,6 +96,21 @@ export default function HolidayManager() {
     { id: 'settings', label: 'Settings', icon: SettingsIcon },
   ];
 
+  // Per-person screen. If the person somehow isn't in the staff list any more
+  // (removed while the screen was open) we fall straight back to the tabs
+  // rather than rendering a broken header.
+  const viewPerson = viewUserId ? staff.find((p) => p.userId === viewUserId) : null;
+  if (!loading && !error && viewUserId && viewPerson) {
+    return (
+      <StaffDatesScreen
+        person={viewPerson}
+        requests={requests.filter((q) => q.userId === viewUserId)}
+        onBack={() => setViewUserId(null)}
+        onChanged={loadAll}
+      />
+    );
+  }
+
   return (
     <div className="p-5 md:p-7 min-h-full bg-[#1a1a2e]">
       <div className="mb-5">
@@ -101,7 +143,7 @@ export default function HolidayManager() {
       {!loading && !error && (
         <>
           {tab === 'approvals' && <ApprovalsTab requests={requests} onChanged={loadAll} />}
-          {tab === 'team' && <TeamTab staff={staff} onChanged={loadAll} />}
+          {tab === 'team' && <TeamTab staff={staff} onChanged={loadAll} onOpenPerson={setViewUserId} />}
           {tab === 'settings' && <SettingsTab settings={settings} onChanged={loadAll} />}
         </>
       )}
@@ -207,7 +249,7 @@ function RequestCard({ req, others, onChanged }) {
 }
 
 // ── Team ─────────────────────────────────────────────────────────────────────
-function TeamTab({ staff, onChanged }) {
+function TeamTab({ staff, onChanged, onOpenPerson }) {
   const [adjustFor, setAdjustFor] = useState(null);
   if (staff.length === 0) {
     return <div className="rounded-xl border border-[#2e2e4a] bg-[#242438] px-4 py-10 text-center text-[13px] text-[#94a3b8]">No staff found.</div>;
@@ -220,7 +262,7 @@ function TeamTab({ staff, onChanged }) {
             <div>Person</div><div className="text-center">Allowance</div><div className="text-center">Working week</div><div className="text-center">Carry-over</div><div>Balance</div><div className="text-right">Actions</div>
           </div>
           {staff.map((p) => (
-            <StaffRow key={p.userId} person={p} onChanged={onChanged} onAdjust={() => setAdjustFor(p)} />
+            <StaffRow key={p.userId} person={p} onChanged={onChanged} onAdjust={() => setAdjustFor(p)} onOpen={() => onOpenPerson(p.userId)} />
           ))}
         </div>
       </div>
@@ -229,7 +271,7 @@ function TeamTab({ staff, onChanged }) {
   );
 }
 
-function StaffRow({ person, onChanged, onAdjust }) {
+function StaffRow({ person, onChanged, onAdjust, onOpen }) {
   const [allowance, setAllowance] = useState(person.baseAllowance != null ? String(person.baseAllowance) : '');
   const [carry, setCarry] = useState(String(person.carriedOver || 0));
   const [working, setWorking] = useState(person.workingDays || '1111100');
@@ -265,13 +307,14 @@ function StaffRow({ person, onChanged, onAdjust }) {
 
   return (
     <div className="grid grid-cols-[minmax(0,1.4fr)_96px_168px_96px_minmax(0,1.4fr)_150px] gap-3 items-center px-4 py-3 border-t border-[#2e2e4a]">
-      <div className="min-w-0 flex items-center gap-2.5">
+      <button onClick={onOpen} title={`View all of ${person.name}'s holiday dates`}
+        className="min-w-0 flex items-center gap-2.5 text-left rounded-lg -mx-1 px-1 py-0.5 hover:bg-[#2a2a48] group">
         <div className="w-8 h-8 rounded-full bg-[#2e2e4a] text-[#cbd5e1] flex items-center justify-center text-[11px] font-semibold flex-shrink-0">{initials(person.name)}</div>
         <div className="min-w-0">
-          <div className="text-[13px] text-white truncate">{person.name}</div>
+          <div className="text-[13px] text-white truncate group-hover:text-[#fcd34d] group-hover:underline">{person.name}</div>
           <div className="text-[11px] text-[#6b7280] capitalize">{person.role}</div>
         </div>
-      </div>
+      </button>
       <div><input value={allowance} onChange={(e) => setAllowance(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="—" inputMode="decimal" className={numCls} /></div>
       <div className="flex items-center justify-center gap-1">
         {DOW.map((d, i) => (
@@ -295,6 +338,301 @@ function StaffRow({ person, onChanged, onAdjust }) {
           className={`inline-flex items-center gap-1 text-[12px] rounded-md px-2.5 py-1.5 ${dirty ? 'bg-[#f59e0b] text-[#1a1a2e] font-semibold' : 'bg-[#1f1f33] text-[#6b7280]'} disabled:opacity-60`}>
           {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Save
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ── One person's full holiday history ────────────────────────────────────────
+// Reached by clicking a name on the Team tab. Shows every booking that person
+// has ever had — past and future, whatever its status — and lets a manager
+// edit or delete any of them.
+//
+// NOTE: this deliberately re-uses the requests ALREADY loaded by the parent
+// (GET /api/holidays/requests returns every request for the whole
+// organisation, all statuses, with no date limit) rather than fetching again.
+// Nothing here needs a new list endpoint.
+function StaffDatesScreen({ person, requests, onBack, onChanged }) {
+  const [editing, setEditing] = useState(null);
+  const [adjusting, setAdjusting] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+  const [err, setErr] = useState(null);
+
+  // "Past" means the booking has finished. Compared at local midnight so a
+  // holiday ending today still counts as current, not past.
+  const today = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
+  const isPast = (q) => { const e = new Date(q.endDate); e.setHours(0, 0, 0, 0); return e < today; };
+
+  const upcoming = requests.filter((q) => !isPast(q)).sort((a, b) => new Date(a.startDate) - new Date(b.startDate));
+  const past = requests.filter(isPast).sort((a, b) => new Date(b.startDate) - new Date(a.startDate));
+
+  const remove = async (q) => {
+    const when = q.startDate === q.endDate ? ukDate(q.startDate) : `${ukDate(q.startDate)} – ${ukDate(q.endDate)}`;
+    if (!confirm(
+      `Delete this holiday for ${person.name}?\n\n${when} (${fmt(q.days)} day${q.days === 1 ? '' : 's'})\n\n`
+      + 'This removes it permanently and puts the days back into their balance. It cannot be undone.'
+    )) return;
+    setErr(null);
+    setBusyId(q.id);
+    try {
+      const r = await fetch(`/api/holidays/requests/${q.id}`, { method: 'DELETE', credentials: 'include' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not delete that booking');
+      onChanged();
+    } catch (e) {
+      setErr(e.message || 'Could not delete that booking');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const totalDays = requests.reduce((n, q) => (q.status === 'approved' ? n + Number(q.days || 0) : n), 0);
+
+  return (
+    <div className="p-5 md:p-7 min-h-full bg-[#1a1a2e]">
+      <button onClick={onBack}
+        className="inline-flex items-center gap-1.5 text-[13px] text-[#94a3b8] hover:text-white mb-4">
+        <ArrowLeft className="w-4 h-4" /> Back to Holiday admin
+      </button>
+
+      <div className="mb-5">
+        <PageHero
+          title={person.name}
+          icon={CalendarDays}
+          meta={[{
+            icon: CalendarCheck,
+            label: person.allowanceSet
+              ? `${fmt(person.remaining)} days left of ${fmt(person.allowance)} · ${fmt(person.taken)} taken · ${fmt(person.booked)} booked · ${fmt(person.pending)} pending`
+              : 'Allowance not set for this person',
+          }]}
+          actions={<HeroButtonOutline icon={Sliders} onClick={() => setAdjusting(true)}>Adjust entitlement</HeroButtonOutline>}
+          compact
+        />
+      </div>
+
+      {err && (
+        <div className="flex items-center gap-2 p-3 mb-4 rounded-lg bg-[rgba(239,68,68,0.10)] border border-[rgba(239,68,68,0.35)] text-[#fca5a5] text-sm">
+          <AlertCircle className="w-4 h-4" /> {err}
+        </div>
+      )}
+
+      <div className="text-[12.5px] text-[#6b7280] mb-3">
+        {requests.length === 0
+          ? 'No holiday booked or requested yet.'
+          : `${requests.length} booking${requests.length === 1 ? '' : 's'} on record · ${fmt(totalDays)} approved day${totalDays === 1 ? '' : 's'} in total.`}
+      </div>
+
+      <BookingSection title="Upcoming and current" rows={upcoming} person={person}
+        busyId={busyId} onEdit={setEditing} onDelete={remove}
+        empty="Nothing booked from today onwards." />
+
+      <BookingSection title="Past" rows={past} person={person}
+        busyId={busyId} onEdit={setEditing} onDelete={remove}
+        empty="No past holiday on record." />
+
+      {editing && (
+        <EditBookingModal
+          booking={editing}
+          person={person}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); onChanged(); }}
+        />
+      )}
+      {adjusting && <AdjustModal person={person} onClose={() => setAdjusting(false)} onChanged={onChanged} />}
+    </div>
+  );
+}
+
+function BookingSection({ title, rows, person, busyId, onEdit, onDelete, empty }) {
+  return (
+    <div className="mb-5">
+      <div className="text-[11px] uppercase tracking-wide text-[#6b7280] mb-2">{title}</div>
+      {rows.length === 0 ? (
+        <div className="rounded-xl border border-[#2e2e4a] bg-[#242438] px-4 py-6 text-center text-[13px] text-[#6b7280]">{empty}</div>
+      ) : (
+        <div className="rounded-xl border border-[#2e2e4a] bg-[#242438] overflow-hidden">
+          {rows.map((q, i) => (
+            <BookingRow key={q.id} req={q} person={person} first={i === 0}
+              busy={busyId === q.id} onEdit={() => onEdit(q)} onDelete={() => onDelete(q)} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BookingRow({ req, person, first, busy, onEdit, onDelete }) {
+  const pill = STATUS_PILL[req.status] || STATUS_PILL.cancelled;
+  const single = ymdLocal(req.startDate) === ymdLocal(req.endDate);
+  const halves = [req.halfStart && 'half day at the start', req.halfEnd && !single && 'half day at the end']
+    .filter(Boolean).join(', ');
+
+  return (
+    <div className={`flex items-start gap-3 px-4 py-3 ${first ? '' : 'border-t border-[#2e2e4a]'}`}>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[13.5px] text-white">
+            {single ? ukDate(req.startDate) : `${ukDate(req.startDate)} – ${ukDate(req.endDate)}`}
+          </span>
+          <span className="text-[12px] text-[#94a3b8]">{fmt(req.days)} day{Number(req.days) === 1 ? '' : 's'}</span>
+          <span className={`text-[10.5px] px-1.5 py-0.5 rounded-full ${pill.cls}`}>{pill.label}</span>
+        </div>
+        {halves && <div className="text-[11.5px] text-[#6b7280] mt-0.5">{halves}</div>}
+        {req.note && <div className="text-[12px] text-[#cbd5e1] mt-1 break-words">{req.note}</div>}
+        {req.status === 'rejected' && req.decisionNote && (
+          <div className="text-[11.5px] text-[#fca5a5] mt-1">Reason: {req.decisionNote}</div>
+        )}
+      </div>
+      <div className="flex items-center gap-1.5 flex-shrink-0">
+        <button onClick={onEdit} disabled={busy} title="Change these dates"
+          className="inline-flex items-center gap-1 text-[12px] text-[#94a3b8] border border-[#2e2e4a] rounded-md px-2.5 py-1.5 hover:bg-[#2a2a48] hover:text-white disabled:opacity-50">
+          <Pencil className="w-3.5 h-3.5" /> Edit
+        </button>
+        <button onClick={onDelete} disabled={busy} title="Delete this booking"
+          className="inline-flex items-center gap-1 text-[12px] text-[#94a3b8] border border-[#2e2e4a] rounded-md px-2.5 py-1.5 hover:bg-[rgba(239,68,68,0.12)] hover:text-[#fca5a5] disabled:opacity-50">
+          {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />} Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ⚠️ DUPLICATED LOGIC — this is countWorkingDays() from web/routes/holidays.js,
+// copied verbatim so the modal can show a live "that's N days" preview while
+// the dates are being picked. The SERVER remains the authority: it recomputes
+// the count on save and its answer is what gets stored and displayed
+// afterwards. If you change one of these two, change the other, or the preview
+// will disagree with what actually gets saved.
+const DEFAULT_WORKING = '1111100';
+function countWorkingDays(startStr, endStr, workingDays, halfStart, halfEnd) {
+  const wd = (workingDays && workingDays.length === 7) ? workingDays : DEFAULT_WORKING;
+  const s = new Date(`${startStr}T00:00:00Z`);
+  const e = new Date(`${endStr}T00:00:00Z`);
+  if (isNaN(s) || isNaN(e) || e < s) return 0;
+
+  const idxOf = (d) => (d.getUTCDay() + 6) % 7; // 0=Mon .. 6=Sun
+  let count = 0;
+  const cur = new Date(s);
+  while (cur <= e) {
+    if (wd[idxOf(cur)] === '1') count += 1;
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  if (count <= 0) return 0;
+
+  const sameDay = startStr === endStr;
+  if (halfStart && wd[idxOf(s)] === '1') count -= 0.5;
+  if (!sameDay && halfEnd && wd[idxOf(e)] === '1') count -= 0.5;
+
+  return Math.max(0, Math.round(count * 2) / 2);
+}
+
+// ── Edit one booking ─────────────────────────────────────────────────────────
+function EditBookingModal({ booking, person, onClose, onSaved }) {
+  const [start, setStart] = useState(ymdLocal(booking.startDate));
+  const [end, setEnd] = useState(ymdLocal(booking.endDate));
+  const [halfStart, setHalfStart] = useState(!!booking.halfStart);
+  const [halfEnd, setHalfEnd] = useState(!!booking.halfEnd);
+  const [note, setNote] = useState(booking.note || '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const sameDay = start === end;
+  const preview = countWorkingDays(start, end, person.workingDays, halfStart, sameDay ? false : halfEnd);
+  const endBeforeStart = !!start && !!end && new Date(end) < new Date(start);
+
+  const save = async () => {
+    setErr(null);
+    if (!start || !end) { setErr('Pick both a start and an end date.'); return; }
+    if (endBeforeStart) { setErr('The end date is before the start date.'); return; }
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/holidays/requests/${booking.id}`, {
+        method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          startDate: start, endDate: end,
+          halfStart, halfEnd: sameDay ? false : halfEnd,
+          note: note.trim() || null,
+        }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not save that change');
+      onSaved();
+    } catch (e) {
+      setErr(e.message || 'Could not save that change');
+      setBusy(false);
+    }
+  };
+
+  const inputCls = 'px-3 py-2 rounded-lg bg-[#1a1a2e] border border-[#2e2e4a] text-[13px] text-white focus:outline-none focus:ring-2 focus:ring-[#f59e0b]/30';
+  const statusLabel = (STATUS_PILL[booking.status] || STATUS_PILL.cancelled).label;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.55)' }} onClick={onClose}>
+      <div className="w-full max-w-lg rounded-2xl border border-[#2e2e4a] bg-[#242438] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#2e2e4a]">
+          <div>
+            <div className="text-white font-semibold text-[15px]">Edit holiday — {person.name}</div>
+            <div className="text-[12px] text-[#94a3b8] mt-0.5">
+              Changing the dates updates their balance. This stays <span className="text-[#cbd5e1]">{statusLabel.toLowerCase()}</span> — it won&apos;t need approving again.
+            </div>
+          </div>
+          <button onClick={onClose} className="text-[#6b7280] hover:text-white"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="p-5">
+          <div className="flex gap-3 flex-wrap">
+            <div className="flex-1 min-w-[150px]">
+              <label className="block text-[11px] text-[#94a3b8] mb-1.5">From</label>
+              <DatePicker value={start} onChange={setStart} className={`${inputCls} w-full text-left`} />
+            </div>
+            <div className="flex-1 min-w-[150px]">
+              <label className="block text-[11px] text-[#94a3b8] mb-1.5">To</label>
+              <DatePicker value={end} onChange={setEnd} className={`${inputCls} w-full text-left`} />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4 mt-3 flex-wrap">
+            <label className="inline-flex items-center gap-2 text-[12.5px] text-[#cbd5e1] cursor-pointer">
+              <input type="checkbox" checked={halfStart} onChange={(e) => setHalfStart(e.target.checked)} className="accent-[#f59e0b]" />
+              {sameDay ? 'Half day only' : 'First day is a half day'}
+            </label>
+            {!sameDay && (
+              <label className="inline-flex items-center gap-2 text-[12.5px] text-[#cbd5e1] cursor-pointer">
+                <input type="checkbox" checked={halfEnd} onChange={(e) => setHalfEnd(e.target.checked)} className="accent-[#f59e0b]" />
+                Last day is a half day
+              </label>
+            )}
+          </div>
+
+          <div className="mt-3">
+            <label className="block text-[11px] text-[#94a3b8] mb-1.5">Note</label>
+            <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional — e.g. moved at short notice" className={`${inputCls} w-full`} />
+          </div>
+
+          <div className="mt-4 px-3 py-2.5 rounded-lg bg-[#1f1f33] border border-[#2e2e4a] text-[12.5px]">
+            {endBeforeStart ? (
+              <span className="text-[#fca5a5]">The end date is before the start date.</span>
+            ) : preview <= 0 ? (
+              <span className="text-[#fca5a5]">That range has no working days for {person.name} — check their working week on the Team tab.</span>
+            ) : (
+              <>
+                <span className="text-white font-semibold">{fmt(preview)} day{preview === 1 ? '' : 's'}</span>
+                <span className="text-[#94a3b8]"> will come off their allowance</span>
+                {Number(booking.days) !== preview && (
+                  <span className="text-[#fcd34d]"> · was {fmt(booking.days)}</span>
+                )}
+              </>
+            )}
+          </div>
+
+          {err && <div className="mt-3 text-[12px] text-[#fca5a5]">{err}</div>}
+
+          <div className="flex items-center justify-end gap-2 mt-5">
+            <button onClick={onClose} className="text-[13px] text-[#94a3b8] border border-[#2e2e4a] rounded-lg px-4 py-2 hover:bg-[#2a2a48] hover:text-white">Cancel</button>
+            <button onClick={save} disabled={busy || endBeforeStart || preview <= 0}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#f59e0b] text-[#1a1a2e] font-semibold text-[13px] px-4 py-2 disabled:opacity-50">
+              {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Save changes
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

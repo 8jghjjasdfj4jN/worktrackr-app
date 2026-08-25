@@ -11,6 +11,12 @@
 //   GET    /requests?status=pending — approval queue (all staff)
 //   POST   /requests/:id/approve    — approve a request
 //   POST   /requests/:id/reject     — reject a request
+//   PUT    /requests/:id            — edit ANY staff member's booking (dates / half
+//                                     days / note). Recomputes the day count from
+//                                     the BOOKING OWNER's working week, never the
+//                                     manager's. Status is deliberately preserved.
+//   DELETE /requests/:id            — (manager branch) delete ANY staff member's
+//                                     booking outright, whatever its status
 //   PUT    /allowances/:userId      — set a person's allowance / working week / carry-over
 //   GET    /settings                — company holiday year + carry-over policy
 //   PUT    /settings                — set company holiday year + carry-over policy
@@ -205,20 +211,37 @@ router.post('/requests', async (req, res) => {
   }
 });
 
-// ── DELETE /requests/:id  (cancel my own pending request) ────────────────────
+// ── DELETE /requests/:id ─────────────────────────────────────────────────────
+// Two behaviours in one endpoint, deliberately in this order so the existing
+// staff behaviour is completely unchanged:
+//   1. Anyone may cancel their OWN request while it is still 'pending'.
+//   2. A manager may additionally delete ANY booking in their organisation,
+//      whatever its status and whoever it belongs to (owner's choice: the row
+//      is removed outright, not marked cancelled).
+// A manager deleting their own pending request matches branch 1 first — same
+// outcome either way.
 router.delete('/requests/:id', async (req, res) => {
   try {
     const ctx = await getOrgContext(req.user.userId);
     const organizationId = ctx.organizationId;
-    const del = await query(
+
+    const own = await query(
       `DELETE FROM holiday_requests
         WHERE id = $1 AND organisation_id = $2 AND user_id = $3 AND status = 'pending'`,
       [req.params.id, organizationId, req.user.userId]
     );
-    if (del.rowCount === 0) {
-      return res.status(404).json({ error: 'Pending request not found' });
+    if (own.rowCount > 0) return res.json({ success: true });
+
+    if (isManager(ctx)) {
+      const any = await query(
+        'DELETE FROM holiday_requests WHERE id = $1 AND organisation_id = $2',
+        [req.params.id, organizationId]
+      );
+      if (any.rowCount > 0) return res.json({ success: true });
+      return res.status(404).json({ error: 'Booking not found' });
     }
-    res.json({ success: true });
+
+    return res.status(404).json({ error: 'Pending request not found' });
   } catch (err) {
     console.error('Error cancelling holiday request:', err);
     res.status(500).json({ error: 'Failed to cancel request' });
@@ -311,6 +334,56 @@ function decide(toStatus) {
 }
 router.post('/requests/:id/approve', decide('approved'));
 router.post('/requests/:id/reject', decide('rejected'));
+
+// ── PUT /requests/:id  (manager) — edit any staff member's booking ────────────
+// The stored `days` is what every balance is calculated from, so it MUST be
+// recomputed whenever the dates move — and from the working week of the person
+// the booking belongs to, not the manager doing the editing. Getting that wrong
+// would silently mis-state someone's remaining holiday with nothing on screen
+// to hint at it.
+// `status` is intentionally left alone: editing an approved booking keeps it
+// approved (owner's decision) so a corrected date doesn't need re-approving.
+router.put('/requests/:id', async (req, res) => {
+  try {
+    const ctx = await getOrgContext(req.user.userId);
+    if (!isManager(ctx)) return res.status(403).json({ error: 'Manager access required' });
+    const organizationId = ctx.organizationId;
+    const data = requestSchema.parse(req.body);
+
+    const existing = await query(
+      'SELECT * FROM holiday_requests WHERE id = $1 AND organisation_id = $2',
+      [req.params.id, organizationId]
+    );
+    if (existing.rowCount === 0) return res.status(404).json({ error: 'Booking not found' });
+    const row = existing.rows[0];
+
+    if (new Date(data.endDate) < new Date(data.startDate)) {
+      return res.status(400).json({ error: 'End date is before start date' });
+    }
+
+    const allowanceRow = await getAllowance(organizationId, row.user_id);
+    const workingDays = (allowanceRow && allowanceRow.working_days) || DEFAULT_WORKING;
+    const days = countWorkingDays(data.startDate, data.endDate, workingDays, data.halfStart, data.halfEnd);
+    if (days <= 0) {
+      return res.status(400).json({ error: 'That date range has no working days for this person' });
+    }
+
+    const upd = await query(
+      `UPDATE holiday_requests
+          SET start_date = $1, end_date = $2, half_start = $3, half_end = $4,
+              days = $5, note = $6, updated_at = NOW()
+        WHERE id = $7 AND organisation_id = $8
+        RETURNING *`,
+      [data.startDate, data.endDate, data.halfStart, data.halfEnd,
+       days, data.note || null, req.params.id, organizationId]
+    );
+    res.json(mapRequest(upd.rows[0]));
+  } catch (err) {
+    if (err.name === 'ZodError') return res.status(400).json({ error: 'Invalid request', details: err.errors });
+    console.error('Error editing holiday request:', err);
+    res.status(500).json({ error: 'Failed to edit booking' });
+  }
+});
 
 // ── PUT /allowances/:userId  (manager) — allowance / working week / carry-over ─
 const allowanceSchema = z.object({

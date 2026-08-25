@@ -4,7 +4,7 @@ import React from 'react';
 // went live. Inline + dim; it lives in the persistent sidebar, so it never
 // flashes during navigation.
 const AppVersion = () => {
-  const APP_VERSION = '2026-08-05.editable-notes';
+  const APP_VERSION = '2026-08-25.staff-holiday-dates';
   return (
     <div className="px-4 pb-2 text-[10px] text-[#6b7280] opacity-60 truncate select-none">
       Build {APP_VERSION}
