@@ -73,6 +73,64 @@ const eventWindow = (date, time) => {
   return { start_at: start.toISOString(), end_at: end.toISOString() };
 };
 
+// "Tomorrow" / "3 days" / "Next week" for the reminder quick-date buttons.
+// Steps the LOCAL calendar day, so month/year rollover and the British Summer
+// Time clock changes are handled by the browser rather than by arithmetic on a
+// timestamp — adding 24h in milliseconds would land on the wrong day on the
+// two clock-change weekends.
+const addDaysLocal = (n) => {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0); // midday: never near a midnight/DST edge
+  d.setDate(d.getDate() + n);
+  return ymdLocal(d);
+};
+
+// ── Reminder templates ───────────────────────────────────────────────────────
+// Fixed list (owner's choice — not user-editable, so no storage needed).
+// Each {blank} becomes a small labelled box; `label` is what sits above it.
+// The finished title is assembled from these and is what lands on the calendar,
+// so submitReminder is untouched and still just posts `title`.
+const REMINDER_TEMPLATES = [
+  { id: 'callback_ask',  chip: 'Call back',   text: 'Call back — ask for {name} regarding {subject}' },
+  { id: 'callback_na',   chip: 'Not avail.',  text: 'Call back — {name} not available' },
+  { id: 'send_quote',    chip: 'Send quote',  text: 'Send quote to {name} for {subject}' },
+  { id: 'chase_quote',   chip: 'Chase quote', text: 'Chase quote — {name}' },
+  { id: 'email',         chip: 'Email',       text: 'Email {name} regarding {subject}' },
+];
+const BLANK_LABELS = { name: 'Ask for', subject: 'Regarding' };
+
+// Which blanks a template needs, in the order they appear in the sentence.
+const blanksOf = (tpl) => {
+  if (!tpl) return [];
+  const found = String(tpl.text).match(/\{(\w+)\}/g) || [];
+  const seen = [];
+  for (const f of found) {
+    const key = f.slice(1, -1);
+    if (!seen.includes(key)) seen.push(key);
+  }
+  return seen;
+};
+
+// Fill a template. Blanks the user hasn't typed yet are dropped along with the
+// word in front of them, so a half-filled template still reads as a sentence
+// ("Call back — ask for Dave") instead of leaking "{subject}" onto the calendar.
+const fillTemplate = (tpl, blanks) => {
+  if (!tpl) return '';
+  let out = String(tpl.text);
+  for (const key of blanksOf(tpl)) {
+    const val = String((blanks || {})[key] || '').trim();
+    if (val) {
+      out = out.replace(new RegExp(`\\{${key}\\}`, 'g'), val);
+    } else {
+      // Drop a trailing connector ("regarding {subject}" → "") rather than
+      // leaving a dangling word.
+      out = out.replace(new RegExp(`\\s*\\b(?:regarding|for|to|ask for)\\s+\\{${key}\\}`, 'gi'), '');
+      out = out.replace(new RegExp(`\\s*\\{${key}\\}`, 'g'), '');
+    }
+  }
+  return out.replace(/\s+/g, ' ').replace(/\s*—\s*$/, '').trim();
+};
+
 // Human-readable file size.
 const fmtSize = (b) => (b == null ? '' : b < 1024 ? `${b} B` : b < 1048576 ? `${Math.round(b / 1024)} KB` : `${(b / 1048576).toFixed(1)} MB`);
 
@@ -214,6 +272,10 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
       date: '',
       time: '09:00',
       notes: t,
+      // Opened from a note, so it starts as free text with the note's wording
+      // already in the box — templates would overwrite it.
+      templateId: '',
+      blanks: {},
     });
   };
   const [reminderForm, setReminderForm] = useState(null); // null = closed
@@ -775,7 +837,7 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
               style={{ background: T.accent, color: T.base, border: 'none', borderRadius: 8, padding: '7px 12px', fontSize: 13, fontWeight: 600, cursor: savingNote ? 'default' : 'pointer', opacity: (!noteText.trim() || savingNote) ? 0.5 : 1 }}>
               <FileText size={14} style={{ verticalAlign: -2, marginRight: 4 }} />{savingNote ? 'Saving…' : 'Save note'}
             </button>
-            <button onClick={() => setReminderForm({ title: '', date: '', time: '09:00', notes: '' })}
+            <button onClick={() => setReminderForm({ title: '', date: '', time: '09:00', notes: '', templateId: '', blanks: {} })}
               style={{ background: 'transparent', color: T.accent, border: `1px solid ${T.accent}88`, borderRadius: 8, padding: '7px 12px', fontSize: 13, cursor: 'pointer' }}>
               <CalendarPlus size={14} style={{ verticalAlign: -2, marginRight: 4 }} />Add calendar reminder
             </button>
@@ -845,11 +907,99 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
             )}
           </div>
 
-          {reminderForm && (
+          {reminderForm && (() => {
+            const tpl = REMINDER_TEMPLATES.find((t) => t.id === reminderForm.templateId) || null;
+            const blanks = reminderForm.blanks || {};
+            const keys = blanksOf(tpl);
+            // People already on this company — real data, so the commonest
+            // "ask for" name is one tap instead of typing it.
+            const contactNames = people
+              .map((p) => String(p?.name || '').trim())
+              .filter(Boolean)
+              .slice(0, 4);
+
+            // Picking a template rebuilds the title; clearing it hands the box
+            // back to free typing exactly as before.
+            const chooseTemplate = (id) => {
+              setReminderHint('');
+              if (!id) { setReminderForm({ ...reminderForm, templateId: '', blanks: {}, title: '' }); return; }
+              const next = REMINDER_TEMPLATES.find((t) => t.id === id) || null;
+              setReminderForm({ ...reminderForm, templateId: id, blanks: {}, title: fillTemplate(next, {}) });
+            };
+            const setBlank = (key, val) => {
+              setReminderHint('');
+              const nextBlanks = { ...blanks, [key]: val };
+              setReminderForm({ ...reminderForm, blanks: nextBlanks, title: fillTemplate(tpl, nextBlanks) });
+            };
+            const setDate = (v) => { setReminderForm({ ...reminderForm, date: v }); if (reminderHint) setReminderHint(''); };
+            // Enter anywhere in the small boxes files the reminder, so a
+            // call-back is type-type-tap without reaching for the mouse.
+            const onKeyDown = (e) => { if (e.key === 'Enter') { e.preventDefault(); submitReminder(); } };
+
+            const chipStyle = (on) => ({
+              background: on ? T.accent : 'transparent',
+              color: on ? T.base : T.sub,
+              border: `1px solid ${on ? T.accent : T.border}`,
+              borderRadius: 999, padding: '4px 10px', fontSize: 12,
+              fontWeight: on ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap',
+            });
+
+            return (
             <div style={{ border: `1px solid ${T.border}`, borderRadius: 8, padding: 10, marginTop: 8, display: 'grid', gap: 8 }}>
-              <input ref={reminderTitleRef} autoFocus value={reminderForm.title} onChange={(e) => { setReminderForm({ ...reminderForm, title: e.target.value }); if (reminderHint) setReminderHint(''); }} placeholder="Reminder (e.g. call back)" style={inputStyle} />
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                {REMINDER_TEMPLATES.map((t) => (
+                  <button key={t.id} type="button" onClick={() => chooseTemplate(reminderForm.templateId === t.id ? '' : t.id)}
+                    title={t.text} style={chipStyle(reminderForm.templateId === t.id)}>{t.chip}</button>
+                ))}
+                {reminderForm.templateId && (
+                  <button type="button" onClick={() => chooseTemplate('')} style={{ ...linkBtn, fontSize: 12 }}>Type my own</button>
+                )}
+              </div>
+
+              {tpl ? (
+                <>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {keys.map((key, i) => (
+                      <div key={key} style={{ flex: '1 1 140px', minWidth: 0 }}>
+                        <label style={{ display: 'block', fontSize: 11, color: T.sub, marginBottom: 4 }}>{BLANK_LABELS[key] || key}</label>
+                        <input
+                          ref={i === 0 ? reminderTitleRef : undefined}
+                          autoFocus={i === 0}
+                          value={blanks[key] || ''}
+                          onChange={(e) => setBlank(key, e.target.value)}
+                          onKeyDown={onKeyDown}
+                          placeholder={key === 'name' ? 'e.g. Dave' : 'e.g. printing'}
+                          style={inputStyle}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {keys.includes('name') && contactNames.length > 0 && (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span style={{ fontSize: 11, color: T.muted }}>People here:</span>
+                      {contactNames.map((n) => (
+                        <button key={n} type="button" onClick={() => setBlank('name', n)} style={chipStyle(blanks.name === n)}>{n}</button>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 12.5, color: T.sub }}>
+                    Calendar entry: <span style={{ color: T.text }}>{reminderForm.title || '—'}</span>
+                  </div>
+                </>
+              ) : (
+                <input ref={reminderTitleRef} autoFocus value={reminderForm.title} onChange={(e) => { setReminderForm({ ...reminderForm, title: e.target.value }); if (reminderHint) setReminderHint(''); }} onKeyDown={onKeyDown} placeholder="Reminder (e.g. call back)" style={inputStyle} />
+              )}
+
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                {[['Tomorrow', 1], ['3 days', 3], ['Next week', 7]].map(([label, n]) => {
+                  const d = addDaysLocal(n);
+                  return (
+                    <button key={label} type="button" onClick={() => setDate(d)} style={chipStyle(reminderForm.date === d)}>{label}</button>
+                  );
+                })}
+              </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <DatePicker value={reminderForm.date} onChange={(v) => { setReminderForm({ ...reminderForm, date: v }); if (reminderHint) setReminderHint(''); }} style={{ ...inputStyle, flex: 1 }} />
+                <DatePicker value={reminderForm.date} onChange={setDate} style={{ ...inputStyle, flex: 1 }} />
                 <TimePicker value={reminderForm.time || '09:00'} onChange={(v) => setReminderForm({ ...reminderForm, time: v })} style={{ ...inputStyle, width: 'auto' }} />
               </div>
               <textarea value={reminderForm.notes || ''} onChange={(e) => setReminderForm({ ...reminderForm, notes: e.target.value })}
@@ -863,7 +1013,8 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
                 <button onClick={submitReminder} style={{ background: T.accent, color: T.base, border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: (reminderForm.title || '').trim() && reminderForm.date ? 1 : 0.5 }}>Add to calendar</button>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
             {history.length === 0 && <div style={{ fontSize: 13, color: T.sub }}>No recent activity yet. Notes you save, calls and meetings from the CRM calendar, and completed tasks show here.</div>}
