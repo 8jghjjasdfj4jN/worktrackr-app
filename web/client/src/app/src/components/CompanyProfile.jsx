@@ -165,6 +165,24 @@ const webHref = (w) => {
   return /^https?:\/\//i.test(s) ? s : `https://${s}`;
 };
 
+// Build a click-to-dial link. Numbers come off the CSV import in all sorts of
+// shapes — "01702 613141", "+44 (0)1702 613141", "01702 613141 / 07700 900123"
+// — but a tel: link must be digits only, with an optional leading +.
+//   • Only the FIRST number is used when two are stored in one field; a dialler
+//     can't ring both, and dialling a mashed-together pair would be worse.
+//   • "(0)" is stripped BEFORE the digits are pulled out, otherwise
+//     "+44 (0)1702..." becomes 4401702... — a number that doesn't exist.
+//   • Returns '' when there are no digits, so the caller renders plain text
+//     instead of a dead link.
+const telHref = (p) => {
+  const first = String(p || '').split(/[/,;]|\bor\b/i)[0];
+  const cleaned = first.replace(/\(0\)/g, '');
+  const plus = cleaned.trim().startsWith('+');
+  const digits = cleaned.replace(/\D/g, '');
+  if (!digits) return '';
+  return `tel:${plus ? '+' : ''}${digits}`;
+};
+
 // what the user reads — scheme and any trailing slash stripped off
 const webLabel = (w) => String(w || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
 
@@ -731,7 +749,13 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 13 }}>
-                <span style={{ color: company.phone ? T.text : T.muted, display: 'inline-flex', alignItems: 'center', gap: 7 }}><Phone size={13} style={{ color: T.accent, flexShrink: 0 }} />{company.phone || 'No telephone'}</span>
+                <span style={{ color: company.phone ? T.text : T.muted, display: 'inline-flex', alignItems: 'center', gap: 7 }}><Phone size={13} style={{ color: T.accent, flexShrink: 0 }} />
+                  {company.phone
+                    ? (telHref(company.phone)
+                        ? <a href={telHref(company.phone)} title={`Call ${company.phone}`} style={{ color: T.text, textDecoration: 'none' }}>{company.phone}</a>
+                        : company.phone)
+                    : 'No telephone'}
+                </span>
                 <span style={{ color: company.email ? T.text : T.muted, display: 'inline-flex', alignItems: 'center', gap: 7 }}><Mail size={13} style={{ color: T.accent, flexShrink: 0 }} />{company.email || 'No email'}</span>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}><Globe size={13} style={{ color: T.accent, flexShrink: 0 }} />
                   {company.website
@@ -808,7 +832,11 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
                 </div>
                 {(p.phone || p.email) && (
                   <div style={{ fontSize: 12, color: T.sub, marginTop: 6, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-                    {p.phone && <span><Phone size={12} style={{ verticalAlign: -1, marginRight: 4, color: T.accent }} />{p.phone}</span>}
+                    {p.phone && <span><Phone size={12} style={{ verticalAlign: -1, marginRight: 4, color: T.accent }} />
+                      {telHref(p.phone)
+                        ? <a href={telHref(p.phone)} title={`Call ${p.phone}`} style={{ color: T.sub, textDecoration: 'none' }}>{p.phone}</a>
+                        : p.phone}
+                    </span>}
                     {p.email && <span><Mail size={12} style={{ verticalAlign: -1, marginRight: 4, color: T.accent }} />{p.email}</span>}
                   </div>
                 )}

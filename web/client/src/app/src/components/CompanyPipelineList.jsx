@@ -46,6 +46,22 @@ export const STAGES = [
 ];
 const STAGE_BY_KEY = Object.fromEntries(STAGES.map((s) => [s.key, s]));
 
+// Click-to-dial link. Kept identical to the copy in CompanyProfile.jsx: numbers
+// come off the CSV import messily ("+44 (0)1702 613141", "01702 613141 / 07700
+// 900123") but a tel: link must be digits only with an optional leading +.
+// Only the FIRST number is dialled when two share a field, and "(0)" is removed
+// BEFORE the digits are extracted or "+44 (0)1702..." becomes 4401702... which
+// is not a real number. Returns '' when there are no digits so the caller can
+// fall back to plain text rather than render a dead link.
+const telHref = (p) => {
+  const first = String(p || '').split(/[/,;]|\bor\b/i)[0];
+  const cleaned = first.replace(/\(0\)/g, '');
+  const plus = cleaned.trim().startsWith('+');
+  const digits = cleaned.replace(/\D/g, '');
+  if (!digits) return '';
+  return `tel:${plus ? '+' : ''}${digits}`;
+};
+
 // Sentinel for the "No stage" filter chip: companies whose salesStage is missing
 // or unrecognised (exactly the rows that render the grey "No stage" pill).
 const NO_STAGE = '__nostage__';
@@ -847,7 +863,19 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
               </div>
             </div>
             <div className="min-w-0 text-[13px] text-[#cbd5e1] truncate flex items-center gap-1.5">
-              {co.phone ? <><Phone className="w-3.5 h-3.5 text-[#6b7280] shrink-0" />{co.phone}</> : <span className="text-[#6b7280]">—</span>}
+              {co.phone ? (
+                <><Phone className="w-3.5 h-3.5 text-[#6b7280] shrink-0" />
+                  {telHref(co.phone)
+                    ? (
+                      // stopPropagation: the whole row opens the company, so
+                      // without this one click would dial AND navigate away.
+                      <a href={telHref(co.phone)} onClick={(e) => e.stopPropagation()}
+                        title={`Call ${co.phone}`}
+                        className="truncate hover:text-[#fcd34d] hover:underline">{co.phone}</a>
+                    )
+                    : co.phone}
+                </>
+              ) : <span className="text-[#6b7280]">—</span>}
             </div>
             <div className="min-w-0 text-[13px] text-[#cbd5e1] truncate flex items-center gap-1.5">
               {co.email ? <><Mail className="w-3.5 h-3.5 text-[#6b7280] shrink-0" />{co.email}</> : <span className="text-[#6b7280]">—</span>}

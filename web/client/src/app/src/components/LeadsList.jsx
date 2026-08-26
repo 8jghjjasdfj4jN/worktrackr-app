@@ -76,6 +76,23 @@ function SortHead({ label, sortKey, active, dir, onSort, className = '' }) {
   );
 }
 
+
+// Click-to-dial link — identical to the copies in CompanyProfile.jsx and
+// CompanyPipelineList.jsx. Numbers arrive from the CSV import messily
+// ("+44 (0)1702 613141", "01702 613141 / 07700 900123") but a tel: link must be
+// digits only with an optional leading +. Only the FIRST number is dialled when
+// two share a field, and "(0)" is stripped BEFORE the digits are pulled out or
+// "+44 (0)1702..." becomes 4401702... which is not a real number. Returns ''
+// when there are no digits, so the caller renders plain text not a dead link.
+const telHref = (p) => {
+  const first = String(p || '').split(/[/,;]|\bor\b/i)[0];
+  const cleaned = first.replace(/\(0\)/g, '');
+  const plus = cleaned.trim().startsWith('+');
+  const digits = cleaned.replace(/\D/g, '');
+  if (!digits) return '';
+  return `tel:${plus ? '+' : ''}${digits}`;
+};
+
 export default function LeadsList({ onOpenCompany, currentUser, isManager = false }) {
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -301,7 +318,17 @@ export default function LeadsList({ onOpenCompany, currentUser, isManager = fals
               >
                 <div className="min-w-0 text-sm font-medium text-white truncate">{co.name}</div>
                 <div className="min-w-0 text-[13px] text-[#94a3b8] truncate">{co.primaryContact || '—'}</div>
-                <div className="min-w-0 text-[13px] text-[#94a3b8] truncate">{co.phone || '—'}</div>
+                <div className="min-w-0 text-[13px] text-[#94a3b8] truncate">
+                  {co.phone
+                    ? (telHref(co.phone)
+                        // stopPropagation: the row opens the company, so without
+                        // this one click would dial AND navigate away.
+                        ? <a href={telHref(co.phone)} onClick={(e) => e.stopPropagation()}
+                            title={`Call ${co.phone}`}
+                            className="hover:text-[#fcd34d] hover:underline">{co.phone}</a>
+                        : co.phone)
+                    : '—'}
+                </div>
                 <div className="min-w-0 text-[13px] text-[#94a3b8] truncate">{co.email || '—'}</div>
                 <div className="min-w-0"><StagePill stageKey={co?.crm?.salesStage} /></div>
                 <div className="min-w-0 text-[13px] text-[#94a3b8] truncate">{co?.crm?.assignedTo || '—'}</div>
