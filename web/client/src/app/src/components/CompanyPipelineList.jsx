@@ -401,7 +401,8 @@ function CallStat({ label, value, big }) {
 // ── Calls-made-today counter ─────────────────────────────────────────────────
 // The owner's rule: any change of a company's sales stage means a call was
 // made. Those changes are recorded server-side (phase13_stage_changes) and
-// counted here for the LOGGED-IN user only.
+// counted ORGANISATION-WIDE — anyone's call moves this number, not just the
+// logged-in user's.
 //
 // Counting is done in SQL per LONDON calendar day, not here — the server and
 // database run on UTC, and under British Summer Time a call at 00:30 local is
@@ -436,13 +437,13 @@ function CallCounter({ refreshKey }) {
     <div className="w-full mb-1 rounded-xl border border-[#2e2e4a] bg-[#242438] px-4 py-3 flex items-center gap-7 flex-wrap">
       <div className="flex items-center gap-2">
         <PhoneCall className="w-4 h-4 text-[#f59e0b]" />
-        <span className="text-[12px] uppercase tracking-wide text-[#94a3b8]">My calls</span>
+        <span className="text-[12px] uppercase tracking-wide text-[#94a3b8]">Team calls</span>
       </div>
       <CallStat label="Today" value={data.today} big />
       <CallStat label="Yesterday" value={data.yesterday} />
       <CallStat label="Last 7 days" value={data.last7} />
       <span className="text-[11px] text-[#6b7280] ml-auto">
-        Counted from stage changes you made · UK time
+        Counted from stage changes across the team · UK time
       </span>
     </div>
   );

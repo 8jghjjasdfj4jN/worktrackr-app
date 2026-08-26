@@ -152,8 +152,15 @@ router.get('/statistics', async (req, res) => {
   }
 });
 
-// GET /api/contacts/call-count — how many calls the LOGGED-IN user has made
-// today, counted as sales-stage changes they made (phase13_stage_changes).
+// GET /api/contacts/call-count — how many calls the WHOLE ORGANISATION has
+// made today, counted as sales-stage changes (phase13_stage_changes).
+//
+// Organisation-wide by design (owner's choice): anyone's call updates the
+// number. Still scoped to the caller's organisation, so one company can never
+// see another's activity. Reaching this at all requires Sales access, which is
+// already permission-gated (user_sales_permissions), so this exposes nothing
+// to someone who couldn't already see the companies themselves. No money or
+// commission figures are involved.
 //
 // ⚠️ MUST be declared BEFORE router.get('/:id') or Express matches '/:id'
 // first and treats "call-count" as a contact id.
@@ -183,8 +190,8 @@ router.get('/call-count', async (req, res) => {
                  > ((NOW() AT TIME ZONE 'Europe/London')::date - INTERVAL '7 days')
          ) AS last7
        FROM contact_stage_changes
-       WHERE organisation_id = $1 AND user_id = $2`,
-      [organizationId, req.user.userId]
+       WHERE organisation_id = $1`,
+      [organizationId]
     );
 
     const row = result.rows[0] || {};
