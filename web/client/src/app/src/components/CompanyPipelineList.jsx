@@ -30,7 +30,12 @@ import SalesPageLayout, {
 } from './SalesPageLayout.jsx';
 
 // stage ladder — value `new` is shown as "Suspect" (the approved rename)
-const STAGES = [
+// Exported: CRMCalendar.jsx imports this so calendar entries are coloured from
+// the SAME list the Sales page uses. Stage keys already live in six places in
+// this app and drifting copies have caused real bugs — sharing this one means
+// a colour change here follows through to the calendar automatically and the
+// two can never disagree.
+export const STAGES = [
   { key: 'new',          label: 'Suspect',      pill: 'bg-[rgba(107,114,128,0.20)] text-[#cbd5e1]', dot: '#6b7280' },
   { key: 'contacted',    label: 'Contacted',    pill: 'bg-[rgba(139,92,246,0.20)] text-[#c4b5fd]',  dot: '#8b5cf6' },
   { key: 'voicemail',    label: 'Voicemail',    pill: 'bg-[rgba(6,182,212,0.20)] text-[#67e8f9]',   dot: '#06b6d4' },

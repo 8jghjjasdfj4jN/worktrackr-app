@@ -13,6 +13,7 @@ import { useSimulation } from '../App.jsx';
 import PageHero, { HeroButtonPrimary, HeroButtonOutline } from './PageHero.jsx';
 import DatePicker from './DatePicker.jsx';
 import DateTimePicker from './DateTimePicker.jsx';
+import { STAGES } from './CompanyPipelineList.jsx';
 
 // FIX 1: type values are lowercase to match backend Zod schema
 const eventTypes = [
@@ -25,6 +26,29 @@ const eventTypes = [
   { value: 'schedule',   label: 'Schedule',    icon: Clock,         color: 'bg-[rgba(71,85,105,0.30)] text-[#cbd5e1]', accent: '#64748b' },
   { value: 'holiday',    label: 'Holiday',     icon: Palmtree,      color: 'bg-[rgba(20,184,166,0.22)] text-[#5eead4]', accent: '#14b8a6' },
 ];
+
+// Stage colours come from the Sales page's own STAGES list, so "Hot prospect"
+// is literally the same amber in both places and can never drift apart.
+// `pill` -> the chip background/text classes, `dot` -> the left accent bar.
+const STAGE_BY_KEY = Object.fromEntries(STAGES.map((s) => [s.key, s]));
+
+// A CRM event belongs to a company when it carries a contact_id. Reminders
+// created without a company (contact_id is nullable) are standalone and are
+// deliberately NOT treated as unstaged — they keep their normal type colour
+// and are never hidden.
+const eventHasCompany = (ev) => !!(ev?.contact_id || ev?.contactId);
+
+// The company's stage, but only if it's one we recognise. Anything missing,
+// null or unknown comes back null and is treated as "no stage".
+const eventStage = (ev) => {
+  const key = ev?.salesStage;
+  return key && STAGE_BY_KEY[key] ? key : null;
+};
+
+// Owner's rule: a company's entries stay off the calendar until it has a
+// stage. This HIDES them from view only — the reminders are untouched in the
+// database and reappear the moment a stage is set on the company.
+const isVisibleCrmEvent = (ev) => !eventHasCompany(ev) || eventStage(ev) !== null;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MODULE-LEVEL SUB-COMPONENTS — sub-component rule: never define inside parent
@@ -128,6 +152,10 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
         ...ev,
         company: ev.company || ev.contact_name || '',
         notes: ev.notes || ev.description || '',
+        // Normalised from the API's snake_case. Without this the stage arrives
+        // as contact_sales_stage, nothing reads it, and every entry silently
+        // falls back to "no stage" — i.e. the whole calendar would empty out.
+        salesStage: ev.salesStage || ev.contact_sales_stage || null,
       }));
     } catch (error) {
       console.error('Error loading CRM events:', error);
@@ -331,7 +359,7 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     const dateStr = `${year}-${month}-${day}`;
-    const crm = sources.sales ? events.filter(event => {
+    const crm = sources.sales ? events.filter(isVisibleCrmEvent).filter(event => {
       const ts = event.start_at || event.startAt;
       if (ts) {
         const ed = new Date(ts);
@@ -361,6 +389,19 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
   };
 
   const getEventTypeConfig = (type) => eventTypes.find(t => t.value === type) || eventTypes[0];
+
+  // Colour an entry by the COMPANY'S SALES STAGE where there is one, falling
+  // back to the event-type colour for everything else (holidays, projects,
+  // schedule, tickets, and standalone reminders with no company). Returns the
+  // same {color, accent, label} shape the type config does, so every render
+  // site can use it unchanged.
+  const getEventStyle = (event) => {
+    const base = getEventTypeConfig(event?.type);
+    const key = eventStage(event);
+    if (!key) return base;
+    const stage = STAGE_BY_KEY[key];
+    return { ...base, color: stage.pill, accent: stage.dot, label: stage.label };
+  };
 
   // Group an already-time-sorted day list into buckets that share the same
   // displayed time, so same-time entries can render side-by-side ("split").
@@ -807,7 +848,7 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
                   groupByTime(todayEvents).map((grp, gi) => (
                     <div key={gi} className="flex gap-3">
                       {grp.map(event => {
-                        const tc = getEventTypeConfig(event.type);
+                        const tc = getEventStyle(event);
                         const ts = event.start_at || event.startAt;
                         return (
                           <div
@@ -869,7 +910,7 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
                         {groupByTime(dayEvents).map((grp, gi) => (
                           <div key={gi} className="flex gap-1">
                             {grp.map(event => {
-                              const tc = getEventTypeConfig(event.type);
+                              const tc = getEventStyle(event);
                               const ts = event.start_at || event.startAt;
                               return (
                                 <div
@@ -922,7 +963,7 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
                           {groupByTime(dayEvents).map((grp, gi) => (
                             <div key={gi} className="flex gap-0.5">
                               {grp.map(event => {
-                                const tc = getEventTypeConfig(event.type);
+                                const tc = getEventStyle(event);
                                 return (
                                   <div
                                     key={event.id}
@@ -963,7 +1004,7 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
               ) : (
                 <div className="space-y-2">
                   {todayEvents.map(event => {
-                    const tc = getEventTypeConfig(event.type);
+                    const tc = getEventStyle(event);
                     const IconComponent = tc.icon;
                     const ts = event.start_at || event.startAt;
                     const te = event.end_at || event.endAt;
@@ -1282,8 +1323,8 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
                 <div className="p-6 space-y-4">
                   <div>
                     <h3 className="text-[15px] font-semibold text-white">{selectedEvent.title}</h3>
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium mt-1 ${getEventTypeConfig(selectedEvent.type).color}`}>
-                      {getEventTypeConfig(selectedEvent.type).label}
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium mt-1 ${getEventStyle(selectedEvent).color}`}>
+                      {getEventStyle(selectedEvent).label}
                     </span>
                   </div>
                   <div className="space-y-2 text-[13px]">
