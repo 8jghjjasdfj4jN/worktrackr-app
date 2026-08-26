@@ -22,7 +22,7 @@
 //
 // Props (unchanged): onOpenCompany(id), onAddCompany().
 import React, { useEffect, useMemo, useState } from 'react';
-import { Upload, MoreHorizontal, Clock, List, Columns3, Phone, Mail, ChevronDown, Building2, SlidersHorizontal } from 'lucide-react';
+import { Upload, MoreHorizontal, Clock, List, Columns3, Phone, PhoneCall, Mail, ChevronDown, Building2, SlidersHorizontal } from 'lucide-react';
 import CsvImport from './CsvImport.jsx';
 import CompanyFilterModal from './CompanyFilterModal.jsx';
 import SalesPageLayout, {
@@ -381,6 +381,69 @@ function PipelineCard({ co, isCustomer, menuOpen, onMenu, onOpen, onMove, onClos
       </div>
 
       {menuOpen && <CardMenu co={co} onOpen={() => onOpen(co.id)} onMove={(k) => onMove(co, k)} onClose={onCloseMenu} onArchive={onArchive ? () => onArchive(co) : undefined} />}
+    </div>
+  );
+}
+
+
+// Sub-component rule: declared at MODULE level, never inside CallCounter's
+// body. A component defined inside a parent is a brand-new type on every
+// render, so React unmounts and remounts it instead of updating it.
+function CallStat({ label, value, big }) {
+  return (
+    <div className="flex flex-col">
+      <span className={big ? 'text-[22px] font-semibold text-[#fcd34d] leading-none' : 'text-[15px] font-semibold text-white leading-none'}>{value}</span>
+      <span className="text-[11px] text-[#6b7280] mt-1">{label}</span>
+    </div>
+  );
+}
+
+// ── Calls-made-today counter ─────────────────────────────────────────────────
+// The owner's rule: any change of a company's sales stage means a call was
+// made. Those changes are recorded server-side (phase13_stage_changes) and
+// counted here for the LOGGED-IN user only.
+//
+// Counting is done in SQL per LONDON calendar day, not here — the server and
+// database run on UTC, and under British Summer Time a call at 00:30 local is
+// still "yesterday" in UTC. Doing the day maths in JavaScript would get that
+// subtly wrong twice a year.
+//
+// Module level, per the sub-component rule.
+function CallCounter({ refreshKey }) {
+  const [data, setData] = useState(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/contacts/call-count', { credentials: 'include' });
+        if (!r.ok) throw new Error('call-count failed');
+        const j = await r.json();
+        if (!cancelled) { setData(j); setFailed(false); }
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [refreshKey]);
+
+  // Never let a counter break the Companies list — if it can't load, it simply
+  // isn't shown.
+  if (failed || !data) return null;
+
+  return (
+    <div className="w-full mb-1 rounded-xl border border-[#2e2e4a] bg-[#242438] px-4 py-3 flex items-center gap-7 flex-wrap">
+      <div className="flex items-center gap-2">
+        <PhoneCall className="w-4 h-4 text-[#f59e0b]" />
+        <span className="text-[12px] uppercase tracking-wide text-[#94a3b8]">My calls</span>
+      </div>
+      <CallStat label="Today" value={data.today} big />
+      <CallStat label="Yesterday" value={data.yesterday} />
+      <CallStat label="Last 7 days" value={data.last7} />
+      <span className="text-[11px] text-[#6b7280] ml-auto">
+        Counted from stage changes you made · UK time
+      </span>
     </div>
   );
 }
@@ -930,7 +993,7 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
         subtitle={archivedMode ? `${companies.length} archived` : subtitle}
         icon={Building2}
         actions={actions}
-        filters={archivedMode ? null : filters}
+        filters={archivedMode ? null : <><CallCounter refreshKey={companies.length} />{filters}</>}
       >
         {archivedMode ? archivedList : (viewMode === 'pipeline' ? pipeline : list)}
       </SalesPageLayout>

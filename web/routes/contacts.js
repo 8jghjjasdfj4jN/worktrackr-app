@@ -152,6 +152,55 @@ router.get('/statistics', async (req, res) => {
   }
 });
 
+// GET /api/contacts/call-count — how many calls the LOGGED-IN user has made
+// today, counted as sales-stage changes they made (phase13_stage_changes).
+//
+// ⚠️ MUST be declared BEFORE router.get('/:id') or Express matches '/:id'
+// first and treats "call-count" as a contact id.
+//
+// ⚠️ Counted per LONDON calendar day, never per UTC day. The server and
+// database run on UTC, so between late March and late October a call made at
+// 00:30 British Summer Time is still "yesterday" in UTC. Doing this in SQL
+// with AT TIME ZONE lets Postgres handle the clock changes rather than
+// arithmetic here getting it subtly wrong twice a year.
+router.get('/call-count', async (req, res) => {
+  try {
+    const orgContext = await getOrgContext(req.user.userId);
+    const organizationId = orgContext.organizationId;
+
+    const result = await query(
+      `SELECT
+         COUNT(*) FILTER (
+           WHERE (changed_at AT TIME ZONE 'Europe/London')::date
+                 = (NOW() AT TIME ZONE 'Europe/London')::date
+         ) AS today,
+         COUNT(*) FILTER (
+           WHERE (changed_at AT TIME ZONE 'Europe/London')::date
+                 = ((NOW() AT TIME ZONE 'Europe/London')::date - INTERVAL '1 day')
+         ) AS yesterday,
+         COUNT(*) FILTER (
+           WHERE (changed_at AT TIME ZONE 'Europe/London')::date
+                 > ((NOW() AT TIME ZONE 'Europe/London')::date - INTERVAL '7 days')
+         ) AS last7
+       FROM contact_stage_changes
+       WHERE organisation_id = $1 AND user_id = $2`,
+      [organizationId, req.user.userId]
+    );
+
+    const row = result.rows[0] || {};
+    res.json({
+      today: Number(row.today || 0),
+      yesterday: Number(row.yesterday || 0),
+      last7: Number(row.last7 || 0),
+    });
+  } catch (error) {
+    // The table may not exist yet on an instance that hasn't run phase13.
+    // Report zeroes rather than breaking the Sales page over a counter.
+    console.error('Error fetching call count:', error);
+    res.json({ today: 0, yesterday: 0, last7: 0, unavailable: true });
+  }
+});
+
 // GET /api/contacts/:id - Get a single contact
 router.get('/:id', async (req, res) => {
   try {
@@ -479,9 +528,12 @@ router.put('/:id', async (req, res) => {
     const organizationId = orgContext.organizationId;
     const { id } = req.params;
 
-    // Verify contact exists and belongs to organization
+    // Verify contact exists and belongs to organization.
+    // `crm` is selected too so the sales stage BEFORE this save is known — it
+    // is the only way to tell whether this request actually changes the stage
+    // (the whole crm object is replaced on save, not merged).
     const checkResult = await query(
-      `SELECT id FROM contacts WHERE id = $1 AND organisation_id = $2`,
+      `SELECT id, crm FROM contacts WHERE id = $1 AND organisation_id = $2`,
       [id, organizationId]
     );
 
@@ -573,6 +625,32 @@ router.put('/:id', async (req, res) => {
        RETURNING *`,
       updateValues
     );
+
+    // Record a stage change so calls can be counted (phase13_stage_changes).
+    // Only written when the stage GENUINELY differs from what was stored —
+    // saving a phone number or a note must not look like a call.
+    // NULL on either side is a real value meaning "No stage", not a missing
+    // one, so clearing a stage and setting a first stage both count.
+    // Wrapped in its own try/catch on purpose: this is bookkeeping, and a
+    // failure here must never lose the user's actual save. Worst case the
+    // counter is one short and the reason is in the logs.
+    try {
+      if (validatedData.crm !== undefined) {
+        const before = checkResult.rows[0].crm || {};
+        const prevStage = before.salesStage || null;
+        const nextStage = (validatedData.crm && validatedData.crm.salesStage) || null;
+        if (prevStage !== nextStage) {
+          await query(
+            `INSERT INTO contact_stage_changes
+               (organisation_id, contact_id, user_id, from_stage, to_stage)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [organizationId, id, req.user.userId, prevStage, nextStage]
+          );
+        }
+      }
+    } catch (logErr) {
+      console.error('Could not record stage change (contact still saved):', logErr);
+    }
 
     res.json(mapContact(result.rows[0]));
   } catch (error) {
