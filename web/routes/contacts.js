@@ -80,6 +80,19 @@ function mapContact(row) {
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // Next diary entry for this company, attached by the list query below.
+    // Undefined on endpoints that don't join it — the UI treats that the same
+    // as "nothing booked", so no screen breaks.
+    nextEvent: row.next_event_at
+      ? {
+          title: row.next_event_title || '',
+          at: row.next_event_at,
+          type: row.next_event_type || null,
+          // Worked out in SQL against NOW() rather than in the browser, so a
+          // wrong clock on someone's PC can't mark things overdue.
+          overdue: row.next_event_overdue === true,
+        }
+      : null,
   };
 }
 
@@ -112,8 +125,42 @@ router.get('/', async (req, res) => {
       conditions.push(`(crm->>'archived' IS DISTINCT FROM 'true')`);
     }
 
+    // Attach each company's NEXT diary entry so the Companies list can show
+    // what's booked without opening the record.
+    //
+    // Only entries that are still outstanding count (planned / in progress) —
+    // something already done or cancelled is not "what happens next".
+    //
+    // Pick order: the soonest UPCOMING entry wins. If there is nothing
+    // upcoming, the most recent MISSED one is shown instead (flagged overdue),
+    // so a forgotten call-back surfaces rather than silently disappearing.
+    //   (e.start_at >= NOW()) DESC   -> upcoming before overdue
+    //   CASE ... END ASC             -> among upcoming, soonest first
+    //   e.start_at DESC              -> among overdue, most recent first
+    //
+    // LEFT JOIN LATERAL so companies with nothing booked still appear.
+    // Conditions below use bare column names, which still resolve to contacts:
+    // crm_events only exists inside the subquery, under the alias e.
     const result = await query(
-      `SELECT * FROM contacts WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC`,
+      `SELECT contacts.*,
+              ne.title      AS next_event_title,
+              ne.start_at   AS next_event_at,
+              ne.type       AS next_event_type,
+              ne.is_overdue AS next_event_overdue
+         FROM contacts
+         LEFT JOIN LATERAL (
+           SELECT e.title, e.start_at, e.type, (e.start_at < NOW()) AS is_overdue
+             FROM crm_events e
+            WHERE e.contact_id = contacts.id
+              AND e.organisation_id = contacts.organisation_id
+              AND e.status IN ('planned', 'in_progress')
+            ORDER BY (e.start_at >= NOW()) DESC,
+                     CASE WHEN e.start_at >= NOW() THEN e.start_at END ASC,
+                     e.start_at DESC
+            LIMIT 1
+         ) ne ON TRUE
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY created_at DESC`,
       params
     );
 

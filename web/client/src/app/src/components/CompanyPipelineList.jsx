@@ -22,7 +22,7 @@
 //
 // Props (unchanged): onOpenCompany(id), onAddCompany().
 import React, { useEffect, useMemo, useState } from 'react';
-import { Upload, MoreHorizontal, Clock, List, Columns3, Phone, PhoneCall, Mail, ChevronDown, Building2, SlidersHorizontal } from 'lucide-react';
+import { Upload, MoreHorizontal, Clock, List, Columns3, Phone, PhoneCall, Mail, ChevronDown, Building2, SlidersHorizontal, Calendar } from 'lucide-react';
 import CsvImport from './CsvImport.jsx';
 import CompanyFilterModal from './CompanyFilterModal.jsx';
 import { logCall, CALL_LOGGED_EVENT } from './callLog.js';
@@ -280,18 +280,29 @@ function timeAgo(iso) {
 }
 
 // next action: prefer the v3.5 dated fields, fall back to the older event string
-function nextActionOf(co) {
-  const crm = co?.crm || {};
-  const text = crm.nextAction || crm.nextCRMEvent || '';
-  const chase = crm.chaseDate || null;
-  let overdue = false;
-  if (chase) {
-    const d = new Date(chase); d.setHours(23, 59, 59, 999);
-    overdue = d.getTime() < Date.now();
-  }
-  return { text, chase, overdue };
-}
 const ukDate = (d) => (d ? new Date(d).toLocaleDateString('en-GB') : '');
+
+// How a booked diary entry reads in the Companies list.
+// Near dates are worded rather than dated ("Today", "Tomorrow") because
+// scanning a column of identical-looking dates is slow; anything further out
+// gets a short date.
+//
+// ⚠️ Compared on the LOCAL calendar day, never via toISOString(), which shifts
+// local midnight back a day under British Summer Time and would label
+// tomorrow's call-back as today's. Falsy input is guarded too: new Date(null)
+// is the 1970 epoch, not an invalid date.
+function reminderWhen(at) {
+  if (!at) return '';
+  const d = new Date(at);
+  if (isNaN(d.getTime())) return '';
+  const startOf = (x) => { const c = new Date(x); c.setHours(0, 0, 0, 0); return c.getTime(); };
+  const days = Math.round((startOf(d) - startOf(new Date())) / 86400000);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Tomorrow';
+  if (days === -1) return 'Yesterday';
+  if (days > 1 && days < 7) return d.toLocaleDateString('en-GB', { weekday: 'short' });
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
 
 // ── card ⋯ menu (Open + safe stage move) ─────────────────────────────────────
 function CardMenu({ co, onOpen, onMove, onClose, onArchive }) {
@@ -904,7 +915,7 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
   const list = (
     <>
       <div className={`${LIST_GRID} px-4 py-2.5 bg-[#1f1f33] text-[11px] uppercase tracking-wide text-[#6b7280]`}>
-        <div>Company</div><div>Telephone</div><div>Email</div><div>Contact</div><div>Next action</div>
+        <div>Company</div><div>Telephone</div><div>Email</div><div>Contact</div><div>Next in diary</div>
         <div className="text-right">Monthly value</div>
       </div>
       {loading && <div className="px-4 py-8 text-center text-[13px] text-[#94a3b8]">Loading companies…</div>}
@@ -917,7 +928,6 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
         </div>
       )}
       {!loading && !error && listVisible.map((co) => {
-        const na = nextActionOf(co);
         const owner = co?.crm?.assignedTo;
         return (
           <button
@@ -960,8 +970,13 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
             </div>
             <div className="min-w-0 text-[13px] text-[#cbd5e1] truncate">{co.primaryContact || <span className="text-[#6b7280]">—</span>}</div>
             <div className="min-w-0 text-[13px] truncate">
-              {na.text ? <span className="text-[#cbd5e1]">{na.text}</span> : <span className="text-[#6b7280]">—</span>}
-              {na.chase && <span className={`ml-1.5 ${na.overdue ? 'text-[#ef4444]' : 'text-[#6b7280]'}`}>({ukDate(na.chase)})</span>}
+              {co.nextEvent ? (
+                <span title={`${co.nextEvent.title} — ${ukDate(co.nextEvent.at)}`}>
+                  <Calendar className={`w-3.5 h-3.5 inline-block -mt-0.5 mr-1.5 ${co.nextEvent.overdue ? 'text-[#ef4444]' : 'text-[#6b7280]'}`} />
+                  <span className={co.nextEvent.overdue ? 'text-[#ef4444]' : 'text-[#fcd34d]'}>{reminderWhen(co.nextEvent.at)}</span>
+                  {co.nextEvent.title && <span className="text-[#cbd5e1]"> · {co.nextEvent.title}</span>}
+                </span>
+              ) : <span className="text-[#6b7280]">—</span>}
             </div>
             <div className="text-right text-[13px] text-white">{money(co?.crm?.totalProfit)}</div>
           </button>
