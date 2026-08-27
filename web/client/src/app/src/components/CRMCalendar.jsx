@@ -7,7 +7,7 @@ import {
   Calendar, Clock, Plus, Phone, Users, Target,
   AlertTriangle, CheckCircle, X, Edit, Trash2,
   ChevronLeft, ChevronRight, Briefcase, ExternalLink,
-  Sparkles, Ticket, FileText, CalendarPlus, Palmtree
+  Sparkles, Ticket, FileText, CalendarPlus, Palmtree, Building2
 } from 'lucide-react';
 import { useSimulation } from '../App.jsx';
 import PageHero, { HeroButtonPrimary, HeroButtonOutline } from './PageHero.jsx';
@@ -121,7 +121,7 @@ function NextActionBox({ suggestion, actions, loading, onAction, onDismiss }) {
   );
 }
 
-export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick, defaultSources, calendarKind = 'sales', initialDate = null }) {
+export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick, defaultSources, calendarKind = 'sales', initialDate = null, onOpenCompany = null }) {
   const isDelivery = calendarKind === 'delivery';
   const { tickets = [] } = useSimulation() || {};
 
@@ -1369,12 +1369,29 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
                   />
                 </div>
                 <div className="flex flex-col sm:flex-row sm:justify-between gap-2 px-6 py-4 border-t border-[#2e2e4a]">
-                  <button
-                    onClick={() => scheduleFromEvent(selectedEvent)}
-                    className="flex items-center gap-2 px-3 py-2 text-[13px] font-medium text-[#cbd5e1] border border-[#2e2e4a] rounded-lg hover:bg-[#1f1f33]"
-                  >
-                    <Calendar className="w-4 h-4" /> Schedule Meeting
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => scheduleFromEvent(selectedEvent)}
+                      className="flex items-center gap-2 px-3 py-2 text-[13px] font-medium text-[#cbd5e1] border border-[#2e2e4a] rounded-lg hover:bg-[#1f1f33]"
+                    >
+                      <Calendar className="w-4 h-4" /> Schedule Meeting
+                    </button>
+                    {/* Opens the company record (notes, history, people) without
+                        going to Sales and searching for it. Only shown when the
+                        entry actually belongs to a company AND the user is
+                        allowed on the Companies screen — Dashboard passes no
+                        handler otherwise, so this can never lead to a blank
+                        page. */}
+                    {onOpenCompany && eventHasCompany(selectedEvent) && (
+                      <button
+                        onClick={() => onOpenCompany(selectedEvent.contact_id || selectedEvent.contactId)}
+                        title={`Open ${selectedEvent.company || 'company'} record`}
+                        className="flex items-center gap-2 px-3 py-2 text-[13px] font-medium text-[#1a1a2e] bg-[#f59e0b] hover:bg-[#d97706] rounded-lg"
+                      >
+                        <Building2 className="w-4 h-4" /> Open company
+                      </button>
+                    )}
+                  </div>
                   <div className="flex flex-wrap gap-2 justify-end">
                     <button
                       onClick={() => setShowDeleteConfirm(true)}

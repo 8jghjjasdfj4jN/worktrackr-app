@@ -99,6 +99,21 @@ const Dashboard = forwardRef(({ currentView, onViewChange, onFullBleedChange }, 
 
   const [activeTab, setActiveTab]             = useState('all_open');
   const [openCompanyId, setOpenCompanyId]     = useState(null);
+  // Which screen a company record was opened FROM. Set when the Calendar opens
+  // a company so its Back link returns to the Calendar rather than dumping the
+  // user on the Companies list, which is where they'd have to start again.
+  // null = opened from the Companies list, so Back behaves exactly as before.
+  const [companyOpenedFrom, setCompanyOpenedFrom] = useState(null);
+  const openCompanyFrom = (fromView) => (id) => {
+    if (!id) return;
+    setCompanyOpenedFrom(fromView);
+    setOpenCompanyId(id);
+    onViewChange('companies');
+  };
+  const backFromCompany = () => {
+    setOpenCompanyId(null);
+    if (companyOpenedFrom) { const to = companyOpenedFrom; setCompanyOpenedFrom(null); onViewChange(to); }
+  };
   const [calendarInitial, setCalendarInitial] = useState(null); // 'YYYY-MM-DD' for "View in calendar"
   const [addingCompany, setAddingCompany]     = useState(false);
   const [openLeadCompanyId, setOpenLeadCompanyId] = useState(null);
@@ -436,6 +451,7 @@ const Dashboard = forwardRef(({ currentView, onViewChange, onFullBleedChange }, 
           timezone={selectedTimezone}
           calendarKind="delivery"
           defaultSources={{ sales: false, projects: true, schedule: true }}
+          onOpenCompany={salesCan('companies') ? openCompanyFrom('calendar') : undefined}
           onTicketClick={(ticket) => { setViewingTicketId(ticket.id); onViewChange('tickets'); }}
         />
       )}
@@ -446,6 +462,7 @@ const Dashboard = forwardRef(({ currentView, onViewChange, onFullBleedChange }, 
           timezone={selectedTimezone}
           calendarKind="sales"
           defaultSources={{ sales: true, projects: false, schedule: false }}
+          onOpenCompany={salesCan('companies') ? openCompanyFrom('sales-calendar') : undefined}
           onTicketClick={(ticket) => { setViewingTicketId(ticket.id); onViewChange('tickets'); }}
         />
       )}
@@ -457,7 +474,7 @@ const Dashboard = forwardRef(({ currentView, onViewChange, onFullBleedChange }, 
               onCancel={() => setAddingCompany(false)}
               onCreated={(id) => { setAddingCompany(false); if (id) setOpenCompanyId(id); }} />
           : openCompanyId
-            ? <CompanyProfile companyId={openCompanyId} onBack={() => setOpenCompanyId(null)}
+            ? <CompanyProfile companyId={openCompanyId} onBack={backFromCompany}
                 onNewOrder={(company) => { setOrdersInitial(company.id); onViewChange('orders'); }}
                 onOpenCalendar={(dayStr) => { setCalendarInitial(dayStr); onViewChange('sales-calendar'); }}
                 onNewContract={(company) => { setContractsInitial(company.id); onViewChange('contracts'); }} />
@@ -487,7 +504,7 @@ const Dashboard = forwardRef(({ currentView, onViewChange, onFullBleedChange }, 
         <div className="p-10 text-center text-[13px] text-[#94a3b8] bg-[#1a1a2e] min-h-full">You don’t have access to this area. Ask an admin if you need it.</div>
       )}
       {currentView === 'crm-settings'   && <ErrorBoundary><CRMDashboard timezone={selectedTimezone} defaultTab="settings" singleSection /></ErrorBoundary>}
-      {currentView === 'crm-calendar'   && <CRMCalendar timezone={selectedTimezone} />}
+      {currentView === 'crm-calendar'   && <CRMCalendar timezone={selectedTimezone} onOpenCompany={salesCan('companies') ? openCompanyFrom('crm-calendar') : undefined} />}
       {currentView === 'security'       && <SecuritySettings />}
       {currentView === 'email-intake'   && <EmailIntakeSettings />}
       {currentView === 'my-notes'       && <PersonalNotes />}
