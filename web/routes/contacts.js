@@ -103,15 +103,21 @@ router.get('/', async (req, res) => {
     const orgContext = await getOrgContext(req.user.userId);
     const organizationId = orgContext.organizationId;
 
-    const conditions = ['organisation_id = $1'];
+    // ⚠️ Every condition MUST be qualified with `contacts.`. The query below
+    // LEFT JOIN LATERALs the next diary entry, so the outer query has two
+    // tables in scope. An unqualified `"type"` matches a column on BOTH
+    // contacts and the joined entry, which Postgres rejects as ambiguous and
+    // fails the WHOLE list with a 500 — exactly what happened on the first
+    // attempt at this.
+    const conditions = ['contacts.organisation_id = $1'];
     const params = [organizationId];
     if (req.query.type) {
       params.push(req.query.type);
-      conditions.push(`"type" = $${params.length}`);
+      conditions.push(`contacts."type" = $${params.length}`);
     }
     if (req.query.stage) {
       params.push(req.query.stage);
-      conditions.push(`crm->>'salesStage' = $${params.length}`);
+      conditions.push(`contacts.crm->>'salesStage' = $${params.length}`);
     }
 
     // Archive visibility: archived records are hidden from everyone by default;
@@ -120,9 +126,9 @@ router.get('/', async (req, res) => {
     const isManager = ['admin', 'manager', 'owner', 'partner_admin'].includes(role);
     if (req.query.archived === 'only') {
       if (!isManager) return res.json([]); // non-managers never see archived
-      conditions.push(`crm->>'archived' = 'true'`);
+      conditions.push(`contacts.crm->>'archived' = 'true'`);
     } else {
-      conditions.push(`(crm->>'archived' IS DISTINCT FROM 'true')`);
+      conditions.push(`(contacts.crm->>'archived' IS DISTINCT FROM 'true')`);
     }
 
     // Attach each company's NEXT diary entry so the Companies list can show
@@ -143,13 +149,16 @@ router.get('/', async (req, res) => {
     // crm_events only exists inside the subquery, under the alias e.
     const result = await query(
       `SELECT contacts.*,
-              ne.title      AS next_event_title,
-              ne.start_at   AS next_event_at,
-              ne.type       AS next_event_type,
-              ne.is_overdue AS next_event_overdue
+              ne.event_title      AS next_event_title,
+              ne.event_start_at   AS next_event_at,
+              ne.event_type       AS next_event_type,
+              ne.event_is_overdue AS next_event_overdue
          FROM contacts
          LEFT JOIN LATERAL (
-           SELECT e.title, e.start_at, e.type, (e.start_at < NOW()) AS is_overdue
+           SELECT e.title       AS event_title,
+                  e.start_at    AS event_start_at,
+                  e.type        AS event_type,
+                  (e.start_at < NOW()) AS event_is_overdue
              FROM crm_events e
             WHERE e.contact_id = contacts.id
               AND e.organisation_id = contacts.organisation_id
@@ -160,7 +169,7 @@ router.get('/', async (req, res) => {
             LIMIT 1
          ) ne ON TRUE
         WHERE ${conditions.join(' AND ')}
-        ORDER BY created_at DESC`,
+        ORDER BY contacts.created_at DESC`,
       params
     );
 
