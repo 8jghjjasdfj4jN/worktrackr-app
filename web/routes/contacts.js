@@ -152,8 +152,44 @@ router.get('/statistics', async (req, res) => {
   }
 });
 
+// POST /api/contacts/call-log — record one call. Fired when a phone number is
+// clicked to dial (phase14_call_log).
+//
+// Owner's rule: EVERY click is one call, including clicking the same number
+// again. There is deliberately NO de-duplication — a redial after no answer is
+// a real second attempt, and silently swallowing it is what made the old
+// stage-based counter read low.
+//
+// ⚠️ MUST be declared BEFORE router.get('/:id')/router.post is fine, but it is
+// kept here beside call-count for clarity.
+router.post('/call-log', async (req, res) => {
+  try {
+    const orgContext = await getOrgContext(req.user.userId);
+    const organizationId = orgContext.organizationId;
+    const contactId = req.body && req.body.contactId ? String(req.body.contactId) : null;
+    const phone = req.body && req.body.phone ? String(req.body.phone).slice(0, 64) : null;
+
+    await query(
+      `INSERT INTO contact_calls (organisation_id, contact_id, user_id, phone)
+       VALUES ($1, $2, $3, $4)`,
+      [organizationId, contactId, req.user.userId, phone]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    // Never let bookkeeping interfere with the user actually placing the call.
+    // The dial happens in the browser regardless of what this returns.
+    console.error('Could not record call:', error);
+    res.status(200).json({ success: false });
+  }
+});
+
 // GET /api/contacts/call-count — how many calls the WHOLE ORGANISATION has
-// made today, counted as sales-stage changes (phase13_stage_changes).
+// made today, counted as click-to-dial events (phase14_call_log).
+//
+// ⚠️ Sales-stage changes NO LONGER feed this number (owner's decision):
+// plenty of calls never move the stage, so the old count under-reported.
+// phase13's stage log still records quietly in the background so the history
+// isn't lost, but nothing here reads it.
 //
 // Organisation-wide by design (owner's choice): anyone's call updates the
 // number. Still scoped to the caller's organisation, so one company can never
@@ -178,18 +214,18 @@ router.get('/call-count', async (req, res) => {
     const result = await query(
       `SELECT
          COUNT(*) FILTER (
-           WHERE (changed_at AT TIME ZONE 'Europe/London')::date
+           WHERE (called_at AT TIME ZONE 'Europe/London')::date
                  = (NOW() AT TIME ZONE 'Europe/London')::date
          ) AS today,
          COUNT(*) FILTER (
-           WHERE (changed_at AT TIME ZONE 'Europe/London')::date
+           WHERE (called_at AT TIME ZONE 'Europe/London')::date
                  = ((NOW() AT TIME ZONE 'Europe/London')::date - INTERVAL '1 day')
          ) AS yesterday,
          COUNT(*) FILTER (
-           WHERE (changed_at AT TIME ZONE 'Europe/London')::date
+           WHERE (called_at AT TIME ZONE 'Europe/London')::date
                  > ((NOW() AT TIME ZONE 'Europe/London')::date - INTERVAL '7 days')
          ) AS last7
-       FROM contact_stage_changes
+       FROM contact_calls
        WHERE organisation_id = $1`,
       [organizationId]
     );

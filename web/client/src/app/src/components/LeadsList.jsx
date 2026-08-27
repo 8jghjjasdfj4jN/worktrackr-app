@@ -20,6 +20,7 @@ import CsvImport from './CsvImport.jsx';
 import AddLeadModal from './AddLeadModal.jsx';
 import ConvertToCustomerModal from './ConvertToCustomerModal.jsx';
 import LeadNotesPanel from './LeadNotesPanel.jsx';
+import { logCall } from './callLog.js';
 import SalesPageLayout, {
   SalesSearch, SalesPrimaryButton, SalesSecondaryButton, SalesAllPill, SalesFilterPill,
 } from './SalesPageLayout.jsx';
@@ -323,7 +324,13 @@ export default function LeadsList({ onOpenCompany, currentUser, isManager = fals
                     ? (telHref(co.phone)
                         // stopPropagation: the row opens the company, so without
                         // this one click would dial AND navigate away.
-                        ? <a href={telHref(co.phone)} onClick={(e) => e.stopPropagation()}
+                        ? <a href={telHref(co.phone)}
+                            onClick={(e) => {
+                              // stopPropagation only — NEVER preventDefault, or
+                              // the call would be logged but never dialled.
+                              e.stopPropagation();
+                              logCall({ contactId: co.id, phone: co.phone });
+                            }}
                             title={`Call ${co.phone}`}
                             className="hover:text-[#fcd34d] hover:underline">{co.phone}</a>
                         : co.phone)

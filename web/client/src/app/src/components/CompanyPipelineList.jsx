@@ -25,6 +25,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Upload, MoreHorizontal, Clock, List, Columns3, Phone, PhoneCall, Mail, ChevronDown, Building2, SlidersHorizontal } from 'lucide-react';
 import CsvImport from './CsvImport.jsx';
 import CompanyFilterModal from './CompanyFilterModal.jsx';
+import { logCall, CALL_LOGGED_EVENT } from './callLog.js';
 import SalesPageLayout, {
   SalesSearch, SalesPrimaryButton, SalesSecondaryButton,
 } from './SalesPageLayout.jsx';
@@ -399,10 +400,13 @@ function CallStat({ label, value, big }) {
 }
 
 // ── Calls-made-today counter ─────────────────────────────────────────────────
-// The owner's rule: any change of a company's sales stage means a call was
-// made. Those changes are recorded server-side (phase13_stage_changes) and
-// counted ORGANISATION-WIDE — anyone's call moves this number, not just the
-// logged-in user's.
+// The owner's rule: every click on a phone number is one call, including
+// clicking the same number again. Clicks are recorded server-side
+// (phase14_call_log) and counted ORGANISATION-WIDE — anyone's call moves this
+// number, not just the logged-in user's.
+//
+// Sales-stage changes NO LONGER feed this number. Plenty of calls never move
+// the stage, so the old count under-reported the work actually done.
 //
 // Counting is done in SQL per LONDON calendar day, not here — the server and
 // database run on UTC, and under British Summer Time a call at 00:30 local is
@@ -416,7 +420,7 @@ function CallCounter({ refreshKey }) {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const load = async () => {
       try {
         const r = await fetch('/api/contacts/call-count', { credentials: 'include' });
         if (!r.ok) throw new Error('call-count failed');
@@ -425,8 +429,12 @@ function CallCounter({ refreshKey }) {
       } catch {
         if (!cancelled) setFailed(true);
       }
-    })();
-    return () => { cancelled = true; };
+    };
+    load();
+    // Refresh the moment a number is clicked anywhere on this page, so the
+    // number visibly ticks up instead of waiting for the next page load.
+    window.addEventListener(CALL_LOGGED_EVENT, load);
+    return () => { cancelled = true; window.removeEventListener(CALL_LOGGED_EVENT, load); };
   }, [refreshKey]);
 
   // Never let a counter break the Companies list — if it can't load, it simply
@@ -443,7 +451,7 @@ function CallCounter({ refreshKey }) {
       <CallStat label="Yesterday" value={data.yesterday} />
       <CallStat label="Last 7 days" value={data.last7} />
       <span className="text-[11px] text-[#6b7280] ml-auto">
-        Counted from stage changes across the team · UK time
+        Counted from numbers dialled across the team · UK time
       </span>
     </div>
   );
@@ -933,7 +941,13 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
                     ? (
                       // stopPropagation: the whole row opens the company, so
                       // without this one click would dial AND navigate away.
-                      <a href={telHref(co.phone)} onClick={(e) => e.stopPropagation()}
+                      <a href={telHref(co.phone)}
+                        onClick={(e) => {
+                          // stopPropagation only — NEVER preventDefault, or the
+                          // number would be logged but never actually dialled.
+                          e.stopPropagation();
+                          logCall({ contactId: co.id, phone: co.phone });
+                        }}
                         title={`Call ${co.phone}`}
                         className="truncate hover:text-[#fcd34d] hover:underline">{co.phone}</a>
                     )
