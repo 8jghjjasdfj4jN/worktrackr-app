@@ -97,6 +97,10 @@ const REMINDER_TEMPLATES = [
   { id: 'send_quote',    chip: 'Send quote',  text: 'Send quote to {name} for {subject}' },
   { id: 'chase_quote',   chip: 'Chase quote', text: 'Chase quote — {name}' },
   { id: 'email',         chip: 'Email',       text: 'Email {name} regarding {subject}' },
+  // Both blanks are optional, as with every other template: leave them empty
+  // and fillTemplate drops the connector words too, so this reads as a plain
+  // "Follow up email" — which is how the owner most often uses it.
+  { id: 'follow_up_email', chip: 'Follow up email', text: 'Follow up email to {name} regarding {subject}' },
 ];
 const BLANK_LABELS = { name: 'Ask for', subject: 'Regarding' };
 
