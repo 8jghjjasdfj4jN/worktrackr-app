@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { z } = require('zod');
 const { query, getOrgContext } = require('@worktrackr/shared/db');
+const { cancelFollowupsForContact } = require('../services/serviceEmailBridge');
 
 // Validation schemas
 const contactSchema = z.object({
@@ -745,6 +746,18 @@ router.put('/:id', async (req, res) => {
              VALUES ($1, $2, $3, $4, $5)`,
             [organizationId, id, req.user.userId, prevStage, nextStage]
           );
+
+          // Moving to dead or customer kills any pending service-email
+          // follow-up. Opposite reasons, same conclusion: a dead company
+          // shouldn't be chased, and a customer shouldn't get a cold-call
+          // follow-up about services they've just bought.
+          //
+          // Deliberately not awaited. Studio is a separate service and a slow
+          // or unreachable one must not hold up the user's save; the bridge
+          // swallows its own errors and logs them.
+          if (nextStage === 'dead' || nextStage === 'customer') {
+            cancelFollowupsForContact(id, `moved to ${nextStage} stage`);
+          }
         }
       }
     } catch (logErr) {

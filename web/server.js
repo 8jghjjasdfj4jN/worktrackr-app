@@ -28,6 +28,7 @@ const publicAuthRoutes = require('./routes/public-auth');
 const customersRoutes = require('./routes/customers');
 const productsRoutes = require('./routes/products');
 const contactsRoutes = require('./routes/contacts');
+const serviceEmailsRoutes = require('./routes/service-emails');
 const contactAttachmentsRoutes = require('./routes/contact-attachments');
 const holidaysRoutes = require('./routes/holidays');
 const salesPermissionsRoutes = require('./routes/sales-permissions');
@@ -166,6 +167,7 @@ app.use('/api/tickets', authenticateToken, ticketsRoutes);
 app.use('/api/organizations', authenticateToken, organizationsRoutes);
 app.use('/api/contacts', authenticateToken, contactsRoutes);
 app.use('/api/contacts', authenticateToken, contactAttachmentsRoutes);
+app.use('/api/service-emails', authenticateToken, serviceEmailsRoutes); // Sweetbyte Studio bridge: send service email + 7-day follow-up
 app.use('/api/holidays', authenticateToken, holidaysRoutes);
 app.use('/api/sales-permissions', authenticateToken, salesPermissionsRoutes);
 app.use('/api/saved-searches', authenticateToken, savedSearchesRoutes);

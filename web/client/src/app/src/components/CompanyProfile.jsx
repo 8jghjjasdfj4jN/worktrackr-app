@@ -18,6 +18,7 @@ import PageHero, { HeroButtonOutline } from './PageHero.jsx';
 import DatePicker from './DatePicker.jsx';
 import { TimePicker } from './DateTimePicker.jsx';
 import { logCall } from './callLog.js';
+import ServiceEmailPanel from './ServiceEmailPanel.jsx';
 
 // Stage values are unchanged in the DB; only the FIRST label is shown as
 // "Suspect" (value stays 'new' so existing data is untouched).
@@ -1128,8 +1129,18 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
           </div>
         </div>
 
-        {/* Overview: stat tiles + tasks */}
+        {/* Overview: send service email + stat tiles + tasks */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Sits at the TOP of the column on purpose — it is used straight
+              after a call, so it should be the first thing in reach without
+              scrolling. onSent reloads the timeline so the logged email shows
+              in History & notes immediately. */}
+          <ServiceEmailPanel
+            companyId={companyId}
+            defaultEmail={company?.email || ''}
+            onSent={loadHistory}
+          />
+
           <div style={cardStyle}>
             <div style={{ ...sectionTitle, marginBottom: 10 }}>Overview</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
