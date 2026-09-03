@@ -18,6 +18,7 @@ import PageHero, { HeroButtonOutline } from './PageHero.jsx';
 import DatePicker from './DatePicker.jsx';
 import { TimePicker } from './DateTimePicker.jsx';
 import { logCall } from './callLog.js';
+import { confirmDial } from './dialConfirm.js';
 import ServiceEmailPanel from './ServiceEmailPanel.jsx';
 
 // Stage values are unchanged in the DB; only the FIRST label is shown as
@@ -758,7 +759,21 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
                 <span style={{ color: company.phone ? T.text : T.muted, display: 'inline-flex', alignItems: 'center', gap: 7 }}><Phone size={13} style={{ color: T.accent, flexShrink: 0 }} />
                   {company.phone
                     ? (telHref(company.phone)
-                        ? <a href={telHref(company.phone)} onClick={() => logCall({ contactId: companyId, phone: company.phone })} title={`Call ${company.phone}`} style={{ color: T.text, textDecoration: 'none' }}>{company.phone}</a>
+                        ? <a href={telHref(company.phone)}
+                            onClick={(e) => {
+                              // preventDefault is REQUIRED now: dialConfirm asks
+                              // first and performs the dial itself. Letting the
+                              // link navigate too would ring the number before
+                              // the question was answered.
+                              e.preventDefault();
+                              confirmDial({ phone: company.phone, href: telHref(company.phone) })
+                                .then((placed) => {
+                                  // Only a real call counts. Cancelling must not
+                                  // inflate the call counter.
+                                  if (placed) logCall({ contactId: companyId, phone: company.phone });
+                                });
+                            }}
+                            title={`Call ${company.phone}`} style={{ color: T.text, textDecoration: 'none' }}>{company.phone}</a>
                         : company.phone)
                     : 'No telephone'}
                 </span>
@@ -840,7 +855,15 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
                   <div style={{ fontSize: 12, color: T.sub, marginTop: 6, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
                     {p.phone && <span><Phone size={12} style={{ verticalAlign: -1, marginRight: 4, color: T.accent }} />
                       {telHref(p.phone)
-                        ? <a href={telHref(p.phone)} onClick={() => logCall({ contactId: companyId, phone: p.phone })} title={`Call ${p.phone}`} style={{ color: T.sub, textDecoration: 'none' }}>{p.phone}</a>
+                        ? <a href={telHref(p.phone)}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              confirmDial({ phone: p.phone, href: telHref(p.phone) })
+                                .then((placed) => {
+                                  if (placed) logCall({ contactId: companyId, phone: p.phone });
+                                });
+                            }}
+                            title={`Call ${p.phone}`} style={{ color: T.sub, textDecoration: 'none' }}>{p.phone}</a>
                         : p.phone}
                     </span>}
                     {p.email && <span><Mail size={12} style={{ verticalAlign: -1, marginRight: 4, color: T.accent }} />{p.email}</span>}

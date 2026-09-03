@@ -21,6 +21,7 @@ import AddLeadModal from './AddLeadModal.jsx';
 import ConvertToCustomerModal from './ConvertToCustomerModal.jsx';
 import LeadNotesPanel from './LeadNotesPanel.jsx';
 import { logCall } from './callLog.js';
+import { confirmDial } from './dialConfirm.js';
 import SalesPageLayout, {
   SalesSearch, SalesPrimaryButton, SalesSecondaryButton, SalesAllPill, SalesFilterPill,
 } from './SalesPageLayout.jsx';
@@ -326,10 +327,17 @@ export default function LeadsList({ onOpenCompany, currentUser, isManager = fals
                         // this one click would dial AND navigate away.
                         ? <a href={telHref(co.phone)}
                             onClick={(e) => {
-                              // stopPropagation only — NEVER preventDefault, or
-                              // the call would be logged but never dialled.
+                              // stopPropagation: the row opens the company.
+                              // preventDefault too, now that dialConfirm asks
+                              // first and places the call itself — without it
+                              // the link would dial before the question was
+                              // answered.
                               e.stopPropagation();
-                              logCall({ contactId: co.id, phone: co.phone });
+                              e.preventDefault();
+                              confirmDial({ phone: co.phone, href: telHref(co.phone) })
+                                .then((placed) => {
+                                  if (placed) logCall({ contactId: co.id, phone: co.phone });
+                                });
                             }}
                             title={`Call ${co.phone}`}
                             className="hover:text-[#fcd34d] hover:underline">{co.phone}</a>

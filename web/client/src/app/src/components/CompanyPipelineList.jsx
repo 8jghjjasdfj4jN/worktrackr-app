@@ -26,6 +26,7 @@ import { Upload, MoreHorizontal, Clock, List, Columns3, Phone, PhoneCall, Mail, 
 import CsvImport from './CsvImport.jsx';
 import CompanyFilterModal from './CompanyFilterModal.jsx';
 import { logCall, CALL_LOGGED_EVENT } from './callLog.js';
+import { confirmDial } from './dialConfirm.js';
 import SalesPageLayout, {
   SalesSearch, SalesPrimaryButton, SalesSecondaryButton,
 } from './SalesPageLayout.jsx';
@@ -953,10 +954,15 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
                       // without this one click would dial AND navigate away.
                       <a href={telHref(co.phone)}
                         onClick={(e) => {
-                          // stopPropagation only — NEVER preventDefault, or the
-                          // number would be logged but never actually dialled.
+                          // stopPropagation: the row opens the company.
+                          // preventDefault too, now that dialConfirm asks first
+                          // and places the call itself.
                           e.stopPropagation();
-                          logCall({ contactId: co.id, phone: co.phone });
+                          e.preventDefault();
+                          confirmDial({ phone: co.phone, href: telHref(co.phone) })
+                            .then((placed) => {
+                              if (placed) logCall({ contactId: co.id, phone: co.phone });
+                            });
                         }}
                         title={`Call ${co.phone}`}
                         className="truncate hover:text-[#fcd34d] hover:underline">{co.phone}</a>
