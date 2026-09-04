@@ -116,6 +116,8 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState(defaultEmail || '');
   const [name, setName] = useState(defaultName || '');
+  // Who passed the address on. Blank = the normal after-a-call email.
+  const [referrer, setReferrer] = useState('');
   const [alreadySent, setAlreadySent] = useState(false);
   const [sending, setSending] = useState(false);
   const [status, setStatus] = useState(null);      // { tone, text }
@@ -130,6 +132,7 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
   // address mid-type if the parent re-rendered.
   useEffect(() => { setEmail(defaultEmail || ''); }, [companyId, defaultEmail]);
   useEffect(() => { setName(defaultName || ''); }, [companyId, defaultName]);
+  useEffect(() => { setReferrer(''); }, [companyId]);
 
   // Catalogue — served by WorkTrackr from Studio, cached server-side for 5
   // minutes. One service now, but still read over the wire so the label can be
@@ -243,6 +246,7 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
           // indistinguishable from an older client that never had one, and the
           // server would fall back to the stored contact.
           contactName: name.trim(),
+          referrerName: referrer.trim(),
           services: [services[0].key],
         }),
       });
@@ -340,8 +344,21 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
         style={{ ...inputStyle, marginTop: 8 }}
       />
 
-      <div style={{ fontSize: 11, color: T.muted, marginTop: 6 }}>
+      <input
+        type="text"
+        value={referrer}
+        onChange={(e) => { setReferrer(e.target.value); setStatus(null); }}
+        placeholder="Referred by (optional)"
+        autoComplete="off"
+        style={{ ...inputStyle, marginTop: 8 }}
+      />
+
+      <div style={{ fontSize: 11, color: T.muted, marginTop: 6, lineHeight: 1.5 }}>
         Leave the name blank and the email opens with "Hi there".
+        <br />
+        Fill in <strong>Referred by</strong> when you spoke to someone else and they
+        gave you this address — the email then says you spoke to them, not to the
+        person receiving it.
       </div>
 
       <button

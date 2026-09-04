@@ -103,6 +103,9 @@ const sendSchema = z.object({
   // which is meaningful — it means "fall back to the company's primary
   // contact, then to 'Hi there'". Capped because it lands in a subject line.
   contactName: z.string().trim().max(80).nullish(),
+  // Who passed the address on, when the recipient is not the person called.
+  // Present and empty means "no referrer" — the normal after-a-call email.
+  referrerName: z.string().trim().max(80).nullish(),
   services: z.array(z.string().min(1)).min(1).max(20),
 });
 
@@ -165,7 +168,7 @@ router.post('/send', async (req, res) => {
 
     const parsed = sendSchema.safeParse(req.body || {});
     if (!parsed.success) return res.status(400).json({ error: 'Invalid input' });
-    const { contactId, email, contactName, services } = parsed.data;
+    const { contactId, email, contactName, referrerName, services } = parsed.data;
 
     // Company details come from the DB, never from the request body — the
     // client shouldn't be able to put someone else's company name on an email.
@@ -197,6 +200,7 @@ router.post('/send', async (req, res) => {
         externalCompanyId: contactId,
         companyName: company.name,
         contactName: nameForEmail,
+        referrerName: (referrerName && referrerName.trim()) || null,
         toEmail: email,
         services,
       },
