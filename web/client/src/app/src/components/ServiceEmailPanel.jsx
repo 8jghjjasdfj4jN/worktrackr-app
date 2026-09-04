@@ -238,9 +238,11 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
         body: JSON.stringify({
           contactId: companyId,
           email: email.trim(),
-          // Blank is meaningful: it tells the server to fall back to the
-          // company's primary contact, and then to "Hi there".
-          contactName: name.trim() || null,
+          // Always sent, even when empty. An empty string means "no name" and
+          // the server honours it; sending null would make a cleared box
+          // indistinguishable from an older client that never had one, and the
+          // server would fall back to the stored contact.
+          contactName: name.trim(),
           services: [services[0].key],
         }),
       });

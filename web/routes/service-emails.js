@@ -177,18 +177,20 @@ router.post('/send', async (req, res) => {
     if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
     const company = c.rows[0];
 
-    // Name: what the caller typed wins, because they have just been told it on
-    // the phone and the stored primary contact may be months stale or absent.
-    // Falling through to null is fine — Studio opens with "Hi there" and drops
-    // the name from the subject entirely.
+    // Name. The panel ALWAYS sends this field, prefilled from the company's
+    // primary contact, so whatever arrives is what the caller had on screen
+    // when they pressed the button.
     //
-    // Note this is the ONE field taken from the request body. The company name
-    // is not: the client shouldn't be able to put someone else's company on an
-    // email, whereas a mistyped first name is only ever the sender's own
-    // problem and is worth far more than an empty greeting.
-    const nameForEmail = (contactName && contactName.trim())
-      || company.primary_contact
-      || null;
+    // An empty string therefore means "I cleared this on purpose" and must be
+    // honoured. Falling back to primary_contact here — as an earlier version
+    // did — made the box impossible to clear: deleting the prefilled name sent
+    // the email to that name anyway.
+    //
+    // The fallback survives only for the case where the field is absent
+    // entirely, i.e. an older client that predates the name box.
+    const nameForEmail = (contactName === undefined || contactName === null)
+      ? (company.primary_contact || null)
+      : (contactName.trim() || null);
 
     const studio = await callStudio('POST', '/send', {
       body: {
