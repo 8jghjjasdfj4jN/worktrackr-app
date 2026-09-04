@@ -175,14 +175,17 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
   // Ask Studio what actually happened. Polled rather than asked once, because
   // the row is claimed by the ticker a moment after the undo window closes and
   // the first look often still says 'queued'.
-  const confirmSend = useCallback(async (remoteId) => {
+  //
+  // sendId is WorkTrackr's LOCAL mirror id — the `id` from the send response,
+  // not `remoteId`. The status route resolves the Studio id itself.
+  const confirmSend = useCallback(async (sendId) => {
     setStatus({ tone: null, text: 'Checking it went…' });
 
     for (let attempt = 0; attempt < CONFIRM_ATTEMPTS; attempt++) {
       await new Promise(r => setTimeout(r, CONFIRM_INTERVAL_MS));
       try {
         const r = await fetch(
-          `/api/service-emails/status/${encodeURIComponent(remoteId)}?contactId=${encodeURIComponent(companyId)}`,
+          `/api/service-emails/status/${encodeURIComponent(sendId)}`,
           { credentials: 'include' },
         );
         if (!r.ok) continue;
