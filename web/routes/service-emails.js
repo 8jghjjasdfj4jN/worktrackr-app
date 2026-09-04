@@ -106,6 +106,50 @@ const sendSchema = z.object({
   services: z.array(z.string().min(1)).min(1).max(20),
 });
 
+// Real send outcome, straight from Studio. The local mirror is written at send
+// time and never learns what SES did, so it cannot answer "did it actually go".
+// This asks Studio, which owns the truth.
+//
+// Deliberately uncached: it is polled for a few seconds after a send and a
+// stale answer is worse than no answer.
+router.get('/status/:remoteId', async (req, res) => {
+  try {
+    const { organizationId } = await getOrgContext(req.user.userId);
+    const { remoteId } = req.params;
+    const contactId = String(req.query.contactId || '');
+
+    // Confirm the caller owns this company before asking Studio about it.
+    const c = await query(
+      `SELECT id FROM contacts WHERE id = $1 AND organisation_id = $2`,
+      [contactId, organizationId]
+    );
+    if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
+
+    const studio = await callStudio('GET', '/status', {
+      queryString: `externalCompanyId=${encodeURIComponent(contactId)}`,
+    });
+    if (!studio.ok) return res.status(502).json({ error: 'Could not reach Sweetbyte Studio' });
+
+    const row = (studio.json?.history || []).find(h => h.id === remoteId);
+    if (!row) return res.json({ status: 'unknown' });
+
+    // Keep the local mirror honest too, so the timeline and chip state stop
+    // claiming a failed send went out.
+    if (row.status && row.status !== 'queued') {
+      await query(
+        `UPDATE service_email_sends SET status = $1
+          WHERE remote_id = $2 AND organisation_id = $3`,
+        [row.status, remoteId, organizationId]
+      ).catch(() => {});
+    }
+
+    res.json({ status: row.status, error: row.error || null, sentAt: row.sentAt || null });
+  } catch (err) {
+    console.error('Service email status failed:', err.message);
+    res.status(500).json({ error: 'Could not check status' });
+  }
+});
+
 router.post('/send', async (req, res) => {
   try {
     const { organizationId } = await getOrgContext(req.user.userId);

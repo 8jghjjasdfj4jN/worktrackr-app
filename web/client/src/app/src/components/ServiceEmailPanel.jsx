@@ -53,7 +53,17 @@ const inputStyle = {
   borderRadius: 'var(--wt-radius-md, 8px)', padding: '8px 10px', fontSize: 13, width: '100%',
 };
 
-const UNDO_SECONDS = 10;
+// Must match SERVICE_EMAIL_UNDO_SECONDS in Studio's service-email-sender.js.
+// Studio owns the real window; this is only the countdown the caller sees. Set
+// it longer than Studio's and the Undo button stays clickable after the email
+// has already gone.
+const UNDO_SECONDS = 5;
+
+// Confirmation polling. Studio's ticker claims the row shortly after the undo
+// window closes, so the first look usually still reads 'queued'. Six tries at
+// 2s covers the normal case with room for a slow SES round trip.
+const CONFIRM_ATTEMPTS = 6;
+const CONFIRM_INTERVAL_MS = 2000;
 
 const looksLikeEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').trim());
 
@@ -162,6 +172,50 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
 
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
+  // Ask Studio what actually happened. Polled rather than asked once, because
+  // the row is claimed by the ticker a moment after the undo window closes and
+  // the first look often still says 'queued'.
+  const confirmSend = useCallback(async (remoteId) => {
+    setStatus({ tone: null, text: 'Checking it went…' });
+
+    for (let attempt = 0; attempt < CONFIRM_ATTEMPTS; attempt++) {
+      await new Promise(r => setTimeout(r, CONFIRM_INTERVAL_MS));
+      try {
+        const r = await fetch(
+          `/api/service-emails/status/${encodeURIComponent(remoteId)}?contactId=${encodeURIComponent(companyId)}`,
+          { credentials: 'include' },
+        );
+        if (!r.ok) continue;
+        const d = await r.json();
+
+        if (d.status === 'sent') {
+          setStatus({ tone: 'success', text: 'Sent — confirmed by Sweetbyte Studio.' });
+          if (onSent) onSent();
+          return;
+        }
+        if (d.status === 'failed') {
+          setStatus({
+            tone: 'error',
+            text: d.error ? `NOT sent: ${d.error}` : 'NOT sent — the send failed.',
+          });
+          if (onSent) onSent();
+          return;
+        }
+        if (d.status === 'cancelled') {
+          setStatus({ tone: 'error', text: 'Cancelled — nothing was sent.' });
+          return;
+        }
+        // 'queued' or 'unknown' — keep waiting.
+      } catch { /* keep trying; a blip shouldn't end the check */ }
+    }
+
+    // Ran out of attempts. Say so honestly rather than claiming success.
+    setStatus({
+      tone: 'error',
+      text: 'Could not confirm it sent — check before calling again.',
+    });
+  }, [companyId, onSent]);
+
   const send = async () => {
     if (!looksLikeEmail(email)) {
       setStatus({ tone: 'error', text: 'That does not look like an email address.' });
@@ -207,7 +261,11 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
           if (p.seconds <= 1) {
             clearInterval(timerRef.current);
             timerRef.current = null;
-            setStatus({ tone: 'success', text: 'Sent.' });
+            // Do NOT claim success here. The countdown finishing only means the
+            // undo window closed; SES may still reject the message. Saying
+            // "Sent." at this point is how a failed send looked successful for
+            // the whole of the first week this feature existed.
+            confirmSend(d.id);
             return null;
           }
           return { ...p, seconds: p.seconds - 1 };
