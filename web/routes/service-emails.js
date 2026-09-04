@@ -99,6 +99,10 @@ router.get('/company/:contactId', async (req, res) => {
 const sendSchema = z.object({
   contactId: z.string().uuid(),
   email: z.string().email(),
+  // Optional, and nullable: the panel sends null when the box is left blank,
+  // which is meaningful — it means "fall back to the company's primary
+  // contact, then to 'Hi there'". Capped because it lands in a subject line.
+  contactName: z.string().trim().max(80).nullish(),
   services: z.array(z.string().min(1)).min(1).max(20),
 });
 
@@ -108,7 +112,7 @@ router.post('/send', async (req, res) => {
 
     const parsed = sendSchema.safeParse(req.body || {});
     if (!parsed.success) return res.status(400).json({ error: 'Invalid input' });
-    const { contactId, email, services } = parsed.data;
+    const { contactId, email, contactName, services } = parsed.data;
 
     // Company details come from the DB, never from the request body — the
     // client shouldn't be able to put someone else's company name on an email.
@@ -120,11 +124,24 @@ router.post('/send', async (req, res) => {
     if (c.rows.length === 0) return res.status(404).json({ error: 'Company not found' });
     const company = c.rows[0];
 
+    // Name: what the caller typed wins, because they have just been told it on
+    // the phone and the stored primary contact may be months stale or absent.
+    // Falling through to null is fine — Studio opens with "Hi there" and drops
+    // the name from the subject entirely.
+    //
+    // Note this is the ONE field taken from the request body. The company name
+    // is not: the client shouldn't be able to put someone else's company on an
+    // email, whereas a mistyped first name is only ever the sender's own
+    // problem and is worth far more than an empty greeting.
+    const nameForEmail = (contactName && contactName.trim())
+      || company.primary_contact
+      || null;
+
     const studio = await callStudio('POST', '/send', {
       body: {
         externalCompanyId: contactId,
         companyName: company.name,
-        contactName: company.primary_contact || null,
+        contactName: nameForEmail,
         toEmail: email,
         services,
       },

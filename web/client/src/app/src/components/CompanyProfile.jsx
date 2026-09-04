@@ -1161,6 +1161,7 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
           <ServiceEmailPanel
             companyId={companyId}
             defaultEmail={company?.email || ''}
+            defaultName={company?.primaryContact || ''}
             onSent={loadHistory}
           />
 

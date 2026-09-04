@@ -3,24 +3,31 @@
 // "Send service email" — the panel on the company profile.
 //
 // The whole point is speed between calls: type the address you were just
-// given, tap the services they showed interest in, tap Send. Studio sends it
-// and books a follow-up for 7 days' time. No writing, no modal, no navigation.
+// given, add a name if you got one, tap the button. No writing, no modal, no
+// navigation.
+//
+// Sep 2026: reduced from a twelve-service chip grid to a single introduction
+// email. There is nothing to pick any more, so the grid is gone and the button
+// carries the name of the one thing it sends. The service key still travels as
+// an array because the bridge, the database column and Studio's API all speak
+// arrays — narrowing that would be a far wider change than it is worth.
 //
 // A separate file rather than a section inside CompanyProfile.jsx for two
 // reasons. It keeps a 1,200-line file from growing further, and it makes the
 // sub-component rule easy to hold: every piece below is defined at module
-// level, so nothing unmounts and remounts on re-render. Defining Chip inside
-// the panel's function body would destroy focus in the address input on every
-// keystroke — the same bug that bit CRM contacts.
+// level, so nothing unmounts and remounts on re-render. Defining a
+// sub-component inside the panel's function body would destroy focus in the
+// address input on every keystroke — the same bug that bit CRM contacts.
 //
 // Props:
 //   companyId    (required) contacts.id
 //   defaultEmail (optional) contacts.email, used to prefill
+//   defaultName  (optional) contacts.primary_contact, used to prefill
 //   onSent       (optional) called after a send settles, so the parent can
 //                           refresh the history timeline
 
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { Mail, Check, Undo2, Loader2 } from 'lucide-react';
+import { Mail, Undo2, Loader2 } from 'lucide-react';
 
 // Theme tokens, duplicated from CompanyProfile.jsx. Pure constants with no
 // behaviour — the codebase duplicates these rather than creating a shared
@@ -53,41 +60,14 @@ const looksLikeEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').
 // Studio's refusal reasons, in the salesperson's language. These are answers
 // rather than errors, so each one says what actually happened.
 const REFUSALS = {
-  already_sent: 'Those services have already gone to this address.',
+  already_sent: 'This address has already had the introduction from this company.',
   suppressed: 'This address has unsubscribed, so nothing was sent.',
-  no_services: 'Pick at least one service first.',
-  invalid_services: 'That service is no longer available — reload the page.',
+  no_services: 'The service list did not load — reload the page.',
+  invalid_services: 'The service list is out of date — reload the page.',
   too_late: 'Too late to undo — that one has already gone.',
 };
 
 // ── Module-level sub-components (never define these inside the panel) ────────
-
-function Chip({ service, selected, alreadySent, disabled, onToggle }) {
-  const active = selected || alreadySent;
-  return (
-    <button
-      type="button"
-      onClick={() => !alreadySent && !disabled && onToggle(service.key)}
-      disabled={alreadySent || disabled}
-      title={alreadySent ? 'Already sent to this address' : service.label}
-      style={{
-        display: 'inline-flex', alignItems: 'center', gap: 5,
-        borderRadius: 999, padding: '5px 10px', fontSize: 12,
-        cursor: alreadySent || disabled ? 'default' : 'pointer',
-        border: `1px solid ${active ? T.accent : T.border}`,
-        background: alreadySent
-          ? 'rgba(148,163,184,0.10)'
-          : selected ? 'rgba(245,158,11,0.16)' : 'transparent',
-        color: alreadySent ? T.muted : selected ? T.accent : T.sub,
-        opacity: alreadySent ? 0.65 : 1,
-        textAlign: 'left',
-      }}
-    >
-      {alreadySent && <Check size={11} />}
-      {service.label}
-    </button>
-  );
-}
 
 function StatusLine({ tone, children }) {
   const colour = tone === 'error' ? T.red : tone === 'success' ? T.green : T.sub;
@@ -101,9 +81,7 @@ function UndoBar({ seconds, onUndo, busy }) {
       marginTop: 10, padding: '8px 10px', borderRadius: 8,
       background: 'rgba(16,185,129,0.12)', border: `1px solid rgba(16,185,129,0.3)`,
     }}>
-      <span style={{ fontSize: 12, color: T.green }}>
-        Sending… follow-up booked for 7 days
-      </span>
+      <span style={{ fontSize: 12, color: T.green }}>Sending…</span>
       <button
         type="button"
         onClick={onUndo}
@@ -123,12 +101,12 @@ function UndoBar({ seconds, onUndo, busy }) {
 
 // ── Panel ────────────────────────────────────────────────────────────────────
 
-export default function ServiceEmailPanel({ companyId, defaultEmail, onSent }) {
+export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName, onSent }) {
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState(defaultEmail || '');
-  const [selected, setSelected] = useState([]);
-  const [sentServices, setSentServices] = useState([]);
+  const [name, setName] = useState(defaultName || '');
+  const [alreadySent, setAlreadySent] = useState(false);
   const [sending, setSending] = useState(false);
   const [status, setStatus] = useState(null);      // { tone, text }
   const [pending, setPending] = useState(null);    // { id, seconds }
@@ -138,11 +116,14 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, onSent }) {
   // reaching through a stale closure.
   const timerRef = useRef(null);
 
-  // Prefill only while the field is untouched. Re-prefilling on every company
-  // change would wipe an address mid-type if the parent re-rendered.
+  // Prefill only on company change. Re-prefilling on every render would wipe an
+  // address mid-type if the parent re-rendered.
   useEffect(() => { setEmail(defaultEmail || ''); }, [companyId, defaultEmail]);
+  useEffect(() => { setName(defaultName || ''); }, [companyId, defaultName]);
 
-  // Catalogue — served by WorkTrackr from Studio, cached server-side.
+  // Catalogue — served by WorkTrackr from Studio, cached server-side for 5
+  // minutes. One service now, but still read over the wire so the label can be
+  // changed in Studio without redeploying WorkTrackr.
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -160,8 +141,8 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, onSent }) {
     return () => { alive = false; };
   }, []);
 
-  // Which services have already gone to THIS address. Refetched as the address
-  // changes, because the answer is per-address: the same service can go to a
+  // Has this address already had it from this company? Refetched as the address
+  // changes, because the answer is per-address: the same email can go to a
   // different person at the same company.
   const refreshSent = useCallback(async () => {
     if (!companyId) return;
@@ -170,8 +151,8 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, onSent }) {
       const r = await fetch(`/api/service-emails/company/${companyId}${qs}`, { credentials: 'include' });
       if (!r.ok) return;
       const d = await r.json();
-      setSentServices(d.sentServices || []);
-    } catch { /* chip state is a nicety; Studio enforces the rule regardless */ }
+      setAlreadySent((d.sentServices || []).length > 0);
+    } catch { /* a nicety; Studio enforces the rule regardless */ }
   }, [companyId, email]);
 
   useEffect(() => {
@@ -181,18 +162,13 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, onSent }) {
 
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
-  const toggle = (key) => {
-    setStatus(null);
-    setSelected((prev) => prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]);
-  };
-
   const send = async () => {
     if (!looksLikeEmail(email)) {
       setStatus({ tone: 'error', text: 'That does not look like an email address.' });
       return;
     }
-    if (selected.length === 0) {
-      setStatus({ tone: 'error', text: 'Pick at least one service.' });
+    if (!services.length) {
+      setStatus({ tone: 'error', text: 'The service list did not load — reload the page.' });
       return;
     }
 
@@ -202,7 +178,14 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, onSent }) {
       const r = await fetch('/api/service-emails/send', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contactId: companyId, email: email.trim(), services: selected }),
+        body: JSON.stringify({
+          contactId: companyId,
+          email: email.trim(),
+          // Blank is meaningful: it tells the server to fall back to the
+          // company's primary contact, and then to "Hi there".
+          contactName: name.trim() || null,
+          services: [services[0].key],
+        }),
       });
       const d = await r.json().catch(() => ({}));
 
@@ -211,9 +194,6 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, onSent }) {
         return;
       }
 
-      // Clear the selection immediately: the next thing that happens is the
-      // next call, and a stale selection is how the wrong email gets sent.
-      setSelected([]);
       await refreshSent();
       if (onSent) onSent();
 
@@ -227,7 +207,7 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, onSent }) {
           if (p.seconds <= 1) {
             clearInterval(timerRef.current);
             timerRef.current = null;
-            setStatus({ tone: 'success', text: 'Sent. Follow-up booked for 7 days.' });
+            setStatus({ tone: 'success', text: 'Sent.' });
             return null;
           }
           return { ...p, seconds: p.seconds - 1 };
@@ -269,6 +249,8 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, onSent }) {
   };
 
   const busy = sending || !!pending;
+  const label = services.length ? services[0].label : 'Send';
+  const blocked = busy || loading || alreadySent;
 
   return (
     <div style={cardStyle}>
@@ -286,52 +268,42 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, onSent }) {
         style={inputStyle}
       />
 
-      <div style={{ fontSize: 12, color: T.muted, margin: '10px 0 6px' }}>
-        What were they interested in?
-      </div>
+      <input
+        type="text"
+        value={name}
+        onChange={(e) => { setName(e.target.value); setStatus(null); }}
+        placeholder="Their name (optional)"
+        autoComplete="off"
+        style={{ ...inputStyle, marginTop: 8 }}
+      />
 
-      {loading ? (
-        <div style={{ fontSize: 13, color: T.sub }}>Loading services…</div>
-      ) : services.length === 0 ? (
-        <div style={{ fontSize: 13, color: T.sub }}>No services available.</div>
-      ) : (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {services.map((s) => (
-            <Chip
-              key={s.key}
-              service={s}
-              selected={selected.includes(s.key)}
-              alreadySent={sentServices.includes(s.key)}
-              disabled={busy}
-              onToggle={toggle}
-            />
-          ))}
-        </div>
-      )}
+      <div style={{ fontSize: 11, color: T.muted, marginTop: 6 }}>
+        Leave the name blank and the email opens with "Hi there".
+      </div>
 
       <button
         type="button"
         onClick={send}
-        disabled={busy || loading}
+        disabled={blocked}
         style={{
           marginTop: 12, width: '100%',
-          background: busy || loading ? T.border : T.accent,
-          color: busy || loading ? T.muted : T.base,
+          background: blocked ? T.border : T.accent,
+          color: blocked ? T.muted : T.base,
           border: 'none', borderRadius: 8, padding: '9px 12px',
           fontSize: 14, fontWeight: 600,
-          cursor: busy || loading ? 'default' : 'pointer',
+          cursor: blocked ? 'default' : 'pointer',
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
         }}
       >
         {sending && <Loader2 size={14} className="animate-spin" />}
-        {sending ? 'Sending…' : `Send${selected.length ? ` (${selected.length})` : ''}`}
+        {sending ? 'Sending…' : loading ? 'Loading…' : label}
       </button>
 
       {pending && <UndoBar seconds={pending.seconds} onUndo={undo} busy={undoing} />}
       {status && <StatusLine tone={status.tone}>{status.text}</StatusLine>}
 
-      {!status && !pending && sentServices.length > 0 && (
-        <StatusLine>Ticked services have already gone to this address.</StatusLine>
+      {!status && !pending && alreadySent && (
+        <StatusLine>Already sent to this address from this company.</StatusLine>
       )}
     </div>
   );
