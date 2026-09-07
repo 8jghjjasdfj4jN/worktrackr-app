@@ -10,7 +10,7 @@
 // Props: companyId (required), onBack(), onNewOrder(), onNewContract().
 import React, { useEffect, useState, useRef } from 'react';
 import {
-  ArrowLeft, Check, Plus, Lock, X, Pencil, Trash2, Paperclip, Download, PhoneOff,
+  ArrowLeft, Check, Plus, Lock, X, Pencil, Trash2, Paperclip, Download, Sparkles, PhoneOff,
   Phone, Users, Mail, FileText, RefreshCw, CornerUpRight, SquareCheck, Repeat,
   CalendarPlus, Calendar, User, Box, Globe, MapPin, Building2, UsersRound,
 } from 'lucide-react';
@@ -231,6 +231,7 @@ const linkBtn = { background: 'transparent', border: 'none', color: T.accent, fo
 
 export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewContract, onOpenCalendar }) {
   const [company, setCompany] = useState(null);
+  const [interestOptions, setInterestOptions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -353,6 +354,37 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
       .catch(() => {});
     return () => { alive = false; };
   }, [companyId]);
+
+  // Interest vocabulary from the server, so the labels here and in the
+  // companies list can never disagree.
+  useEffect(() => {
+    fetch('/api/contacts/service-interests', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.interests) setInterestOptions(d.interests); })
+      .catch(() => {});
+  }, []);
+
+  // Toggle one interest. Sends ONLY the interests key — the PUT route strips
+  // absent keys, so nothing else on the company is touched.
+  const toggleInterest = async (key) => {
+    if (!company) return;
+    const prev = company;
+    const current = Array.isArray(company.interests) ? company.interests : [];
+    const next = current.includes(key)
+      ? current.filter((k) => k !== key)
+      : [...current, key];
+    setCompany({ ...company, interests: next });   // optimistic
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/contacts/${companyId}`, {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interests: next }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    } catch (e) { setCompany(prev); setError(e.message || 'Could not save'); }
+    finally { setSaving(false); }
+  };
 
   // Save a crm field (stage or source) — same PUT, merging crm.
   const saveCrm = async (patch) => {
@@ -827,6 +859,45 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
                 })()}
               </div>
             )}
+          </div>
+
+          {/* ── Interested in ──────────────────────────────────────────────
+              Recorded for EVERY company, not just hot prospects: a suspect who
+              mentions VoIP should have it captured at that moment, so it is
+              already there when they are promoted. The companies list only
+              DISPLAYS it on the hot prospect view. */}
+          <div style={{ ...cardStyle, marginBottom: 12 }}>
+            <div style={{ ...sectionTitle, marginBottom: 4 }}>
+              <Sparkles size={16} style={{ color: T.accent, verticalAlign: -2, marginRight: 6 }} />
+              Interested in
+            </div>
+            <div style={{ fontSize: 12, color: T.muted, marginBottom: 10 }}>
+              Tap what they asked about. Saves as you go.
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {interestOptions.map((opt) => {
+                const on = (company.interests || []).includes(opt.key);
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => toggleInterest(opt.key)}
+                    style={{
+                      background: on ? T.accent : 'transparent',
+                      color: on ? T.base : T.sub,
+                      border: `1px solid ${on ? T.accent : T.border}`,
+                      borderRadius: 999, padding: '5px 11px', fontSize: 12.5,
+                      fontWeight: on ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+              {interestOptions.length === 0 && (
+                <span style={{ fontSize: 12, color: T.muted }}>Loading…</span>
+              )}
+            </div>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>

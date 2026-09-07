@@ -5,6 +5,31 @@ const { query, getOrgContext } = require('@worktrackr/shared/db');
 const { cancelFollowupsForContact } = require('../services/serviceEmailBridge');
 
 // Validation schemas
+/**
+ * What a prospect said they were interested in on a call.
+ *
+ * Ten values, taken from the Sweetbyte brochure. Email marketing and
+ * professional voice/greetings are deliberately excluded — they are add-ons
+ * rather than the thing that makes someone a hot prospect, and every extra
+ * option makes the tick list slower to scan between calls.
+ *
+ * KEYS ARE PERMANENT. They are stored in contacts.interests and a rename would
+ * silently orphan every existing row. Change the label freely; never the key.
+ */
+const SERVICE_INTERESTS = [
+  { key: 'it_support',     label: 'IT support' },
+  { key: 'cyber_security', label: 'Cyber security' },
+  { key: 'internet',       label: 'Business internet' },
+  { key: 'wifi',           label: 'Managed Wi-Fi' },
+  { key: 'website',        label: 'Website' },
+  { key: 'domains',        label: 'Domains & hosting' },
+  { key: 'backups',        label: 'Backups' },
+  { key: 'microsoft_365',  label: 'Microsoft 365' },
+  { key: 'voip',           label: 'VoIP telephony' },
+  { key: 'custom_apps',    label: 'Custom apps & automation' },
+];
+const INTEREST_KEYS = SERVICE_INTERESTS.map((s) => s.key);
+
 const contactSchema = z.object({
   type: z.enum(['company', 'individual']).default('company'),
   name: z.string().min(1, 'Name is required'),
@@ -14,6 +39,9 @@ const contactSchema = z.object({
   phone: z.string().optional(),
   website: z.string().url().optional().or(z.literal('')),
   addresses: z.array(z.any()).default([]),
+  // Deliberately NOT .default([]) — see the note in the PUT route. A default
+  // here would let an absent key wipe a company's interests on every save.
+  interests: z.array(z.enum(INTEREST_KEYS)).optional(),
   accounting: z.object({
     xeroContactId: z.string().optional().nullable(),
     quickbooksContactId: z.string().optional().nullable(),
@@ -182,6 +210,10 @@ router.get('/', async (req, res) => {
 });
 
 // GET /api/contacts/statistics - Get contact statistics
+// The interest vocabulary, so the company page and the list render the same
+// labels the server validates against. Static, hence no org scoping.
+router.get('/service-interests', (req, res) => res.json({ interests: SERVICE_INTERESTS }));
+
 router.get('/statistics', async (req, res) => {
   try {
     const orgContext = await getOrgContext(req.user.userId);
@@ -688,6 +720,13 @@ router.put('/:id', async (req, res) => {
       updateFields.push(`addresses = $${paramIndex++}`);
       updateValues.push(JSON.stringify(validatedData.addresses));
     }
+    if (validatedData.interests !== undefined) {
+      // Deduplicated and ordered to match SERVICE_INTERESTS so the tags always
+      // read the same way round in the list, whatever order they were ticked.
+      const picked = new Set(validatedData.interests);
+      updateFields.push(`interests = $${paramIndex++}`);
+      updateValues.push(INTEREST_KEYS.filter((k) => picked.has(k)));
+    }
     if (validatedData.accounting !== undefined) {
       updateFields.push(`accounting = $${paramIndex++}`);
       updateValues.push(JSON.stringify(validatedData.accounting));
@@ -775,6 +814,82 @@ router.put('/:id', async (req, res) => {
 });
 
 // DELETE /api/contacts/:id - Delete a contact
+/**
+ * POST /api/contacts/bulk-delete
+ *
+ * Two-phase on purpose. Called with confirm:false it deletes nothing and
+ * reports what WOULD be affected; with confirm:true it performs the delete.
+ * One route rather than two so the preview and the delete can never drift
+ * apart and show the operator something different from what happens.
+ *
+ * Worth knowing what a contact delete actually does, because it is not obvious
+ * and it is why this warns rather than just getting on with it:
+ *
+ *   CASCADE  (destroyed) — notes/history, crm_events, stage changes,
+ *                          customer_services, service_email_sends
+ *   SET NULL (orphaned)  — tickets, jobs, invoices, orders, contracts, deals,
+ *                          tasks, call_log
+ *
+ * So an invoice survives a deleted company but loses its link to it. Deleting
+ * one record at a time that is recoverable; deleting thirty in a click is not,
+ * which is what the preview is for.
+ */
+router.post('/bulk-delete', async (req, res) => {
+  try {
+    const { organizationId } = await getOrgContext(req.user.userId);
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const confirm = req.body?.confirm === true;
+
+    if (ids.length === 0) return res.status(400).json({ error: 'No companies selected' });
+    // A ceiling so a runaway client can't wipe the table in one request.
+    if (ids.length > 200) return res.status(400).json({ error: 'Too many at once — select 200 or fewer' });
+
+    // Scope to this organisation up front. Everything below works off `owned`,
+    // never the raw ids, so another org's records can't be touched even if
+    // their ids are passed in.
+    const owned = await query(
+      `SELECT id, name FROM contacts WHERE id = ANY($1::uuid[]) AND organisation_id = $2`,
+      [ids, organizationId]
+    );
+    if (owned.rows.length === 0) return res.status(404).json({ error: 'No matching companies' });
+
+    const ownedIds = owned.rows.map(r => r.id);
+
+    // What would be orphaned. Counted per table so the warning can name them.
+    const linked = await query(
+      `SELECT
+         (SELECT COUNT(*) FROM invoices  WHERE contact_id = ANY($1::uuid[])) AS invoices,
+         (SELECT COUNT(*) FROM tickets   WHERE contact_id = ANY($1::uuid[])) AS tickets,
+         (SELECT COUNT(*) FROM contracts WHERE contact_id = ANY($1::uuid[])) AS contracts,
+         (SELECT COUNT(*) FROM orders    WHERE contact_id = ANY($1::uuid[])) AS orders`,
+      [ownedIds]
+    ).catch(() => ({ rows: [{ invoices: 0, tickets: 0, contracts: 0, orders: 0 }] }));
+
+    const counts = linked.rows[0] || {};
+    const summary = {
+      companies: owned.rows.length,
+      names: owned.rows.map(r => r.name),
+      invoices: Number(counts.invoices || 0),
+      tickets: Number(counts.tickets || 0),
+      contracts: Number(counts.contracts || 0),
+      orders: Number(counts.orders || 0),
+    };
+
+    if (!confirm) return res.json({ preview: true, ...summary });
+
+    const result = await query(
+      `DELETE FROM contacts WHERE id = ANY($1::uuid[]) AND organisation_id = $2 RETURNING id`,
+      [ownedIds, organizationId]
+    );
+
+    console.log(`[contacts] bulk delete: ${result.rows.length} companies by user ${req.user.userId}`);
+    res.json({ deleted: result.rows.length, ...summary });
+  } catch (error) {
+    console.error('Error bulk deleting contacts:', error);
+    res.status(500).json({ error: 'Failed to delete companies' });
+  }
+});
+
 router.delete('/:id', async (req, res) => {
   try {
     const orgContext = await getOrgContext(req.user.userId);

@@ -67,6 +67,22 @@ const telHref = (p) => {
 // Sentinel for the "No stage" filter chip: companies whose salesStage is missing
 // or unrecognised (exactly the rows that render the grey "No stage" pill).
 const NO_STAGE = '__nostage__';
+// One colour per service so a tag is recognisable at a glance without reading
+// it. Fixed by key, not by position, so adding a service never re-colours the
+// existing ones.
+const INTEREST_TAG = {
+  it_support:     'bg-[rgba(55,138,221,0.18)] text-[#85B7EB]',
+  cyber_security: 'bg-[rgba(226,75,74,0.18)] text-[#F09595]',
+  internet:       'bg-[rgba(55,138,221,0.18)] text-[#85B7EB]',
+  wifi:           'bg-[rgba(29,158,117,0.18)] text-[#5DCAA5]',
+  website:        'bg-[rgba(127,119,221,0.18)] text-[#AFA9EC]',
+  domains:        'bg-[rgba(29,158,117,0.18)] text-[#5DCAA5]',
+  backups:        'bg-[rgba(136,135,128,0.22)] text-[#B4B2A9]',
+  microsoft_365:  'bg-[rgba(55,138,221,0.18)] text-[#85B7EB]',
+  voip:           'bg-[rgba(186,117,23,0.20)] text-[#EF9F27]',
+  custom_apps:    'bg-[rgba(216,90,48,0.18)] text-[#F0997B]',
+};
+
 const isNoStage = (co) => !STAGE_BY_KEY[co?.crm?.salesStage];
 
 // ── Filter pop-up plumbing ──────────────────────────────────────────────────
@@ -510,6 +526,7 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
   const chooseView = (m) => { setViewMode(m); try { localStorage.setItem('wt_companies_view', m); } catch (e) { /* ignore */ } };
   const [showImport, setShowImport] = useState(false);
   const [reload, setReload] = useState(0);
+  const [interestLabels, setInterestLabels] = useState({});
   const [menuOpen, setMenuOpen] = useState(null);
   const [archivedMode, setArchivedMode] = useState(false); // managers/admins: view archived companies
 
@@ -546,6 +563,14 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
   // staff list — turns the stored Spotter reference into a readable name
   useEffect(() => {
     let alive = true;
+    // Interest labels come from the server so the list and the company page can
+    // never drift apart on wording. Failure is silent: the column falls back to
+    // showing raw keys rather than breaking the list.
+    fetch('/api/contacts/service-interests', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.interests) setInterestLabels(Object.fromEntries(d.interests.map((i) => [i.key, i.label]))); })
+      .catch(() => {});
+
     fetch('/api/tickets/users/list', { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : { users: [] }))
       .then((d) => { if (alive) setUsers(d.users || []); })
@@ -912,12 +937,29 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
   );
 
   // ── LIST (table) ───────────────────────────────────────────────────────────
-  const LIST_GRID = 'grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.5fr)_minmax(0,0.9fr)] gap-3';
+  // The interests column earns its width only on the hot prospect view — those
+  // are the ones being actively worked, and on the other 2,000+ rows it would
+  // be mostly empty. Everywhere else the layout is exactly as it was.
+  const showInterests = (filterSel.stages || []).length === 1
+    && filterSel.stages[0] === 'hot_prospect';
+
+  const LIST_GRID = showInterests
+    ? 'grid grid-cols-[minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(0,1.1fr)_minmax(0,1.7fr)_minmax(0,1.2fr)] gap-3'
+    : 'grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.5fr)_minmax(0,0.9fr)] gap-3';
   const list = (
     <>
       <div className={`${LIST_GRID} px-4 py-2.5 bg-[#1f1f33] text-[11px] uppercase tracking-wide text-[#6b7280]`}>
-        <div>Company</div><div>Telephone</div><div>Email</div><div>Contact</div><div>Next in diary</div>
-        <div className="text-right">Monthly value</div>
+        {showInterests ? (
+          <>
+            <div>Company</div><div>Telephone</div><div>Contact</div>
+            <div>Interested in</div><div>Next in diary</div>
+          </>
+        ) : (
+          <>
+            <div>Company</div><div>Telephone</div><div>Email</div><div>Contact</div><div>Next in diary</div>
+            <div className="text-right">Monthly value</div>
+          </>
+        )}
       </div>
       {loading && <div className="px-4 py-8 text-center text-[13px] text-[#94a3b8]">Loading companies…</div>}
       {error && !loading && <div className="px-4 py-8 text-center text-[13px] text-[#fca5a5]">Couldn’t load companies: {error}</div>}
@@ -971,10 +1013,34 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
                 </>
               ) : <span className="text-[#6b7280]">—</span>}
             </div>
-            <div className="min-w-0 text-[13px] text-[#cbd5e1] truncate flex items-center gap-1.5">
-              {co.email ? <><Mail className="w-3.5 h-3.5 text-[#6b7280] shrink-0" />{co.email}</> : <span className="text-[#6b7280]">—</span>}
-            </div>
+            {!showInterests && (
+              <div className="min-w-0 text-[13px] text-[#cbd5e1] truncate flex items-center gap-1.5">
+                {co.email ? <><Mail className="w-3.5 h-3.5 text-[#6b7280] shrink-0" />{co.email}</> : <span className="text-[#6b7280]">—</span>}
+              </div>
+            )}
             <div className="min-w-0 text-[13px] text-[#cbd5e1] truncate">{co.primaryContact || <span className="text-[#6b7280]">—</span>}</div>
+            {showInterests && (() => {
+              // Three tags then a count. Four services is common and the row has
+              // to stay one line high, or the list stops being scannable — which
+              // is the entire point of showing this here rather than opening
+              // each record.
+              const all = Array.isArray(co.interests) ? co.interests : [];
+              const shown = all.slice(0, 3);
+              const extra = all.length - shown.length;
+              return (
+                <div className="min-w-0 flex items-center gap-1 flex-wrap"
+                     title={all.map((k) => interestLabels[k] || k).join(', ')}>
+                  {all.length === 0 && <span className="text-[12px] text-[#6b7280]">Not set</span>}
+                  {shown.map((k) => (
+                    <span key={k}
+                      className={`inline-block rounded-md px-1.5 py-0.5 text-[11px] whitespace-nowrap ${INTEREST_TAG[k] || 'bg-[rgba(107,114,128,0.20)] text-[#cbd5e1]'}`}>
+                      {interestLabels[k] || k}
+                    </span>
+                  ))}
+                  {extra > 0 && <span className="text-[11px] text-[#94a3b8]">+{extra} more</span>}
+                </div>
+              );
+            })()}
             <div className="min-w-0 text-[13px] truncate">
               {co.nextEvent ? (
                 <span title={`${co.nextEvent.title} — ${ukDate(co.nextEvent.at)}`}>
@@ -984,7 +1050,9 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
                 </span>
               ) : <span className="text-[#6b7280]">—</span>}
             </div>
-            <div className="text-right text-[13px] text-white">{money(co?.crm?.totalProfit)}</div>
+            {!showInterests && (
+              <div className="text-right text-[13px] text-white">{money(co?.crm?.totalProfit)}</div>
+            )}
           </button>
         );
       })}
