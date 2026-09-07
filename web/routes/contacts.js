@@ -103,6 +103,12 @@ function mapContact(row) {
     crm: row.crm || {},
     contactPersons: row.contact_persons || [],
     tags: row.tags || [],
+    // Service interests. MUST be listed here explicitly — mapContact builds the
+    // response field by field, so a column missing from this object is invisible
+    // to the whole frontend even when it saves correctly. That failure looks
+    // exactly like "the save doesn't work": the write succeeds, the read drops
+    // it, and the UI reverts.
+    interests: row.interests || [],
     notes: row.notes || '',
     customFields: row.custom_fields || {},
     organisationId: row.organisation_id,
