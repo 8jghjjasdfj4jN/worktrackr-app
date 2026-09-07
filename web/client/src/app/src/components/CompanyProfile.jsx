@@ -10,7 +10,7 @@
 // Props: companyId (required), onBack(), onNewOrder(), onNewContract().
 import React, { useEffect, useState, useRef } from 'react';
 import {
-  ArrowLeft, Check, Plus, Lock, X, Pencil, Trash2,
+  ArrowLeft, Check, Plus, Lock, X, Pencil, Trash2, Paperclip, Download, PhoneOff,
   Phone, Users, Mail, FileText, RefreshCw, CornerUpRight, SquareCheck, Repeat,
   CalendarPlus, Calendar, User, Box, Globe, MapPin, Building2, UsersRound,
 } from 'lucide-react';
@@ -139,6 +139,7 @@ const fillTemplate = (tpl, blanks) => {
 };
 
 // Human-readable file size.
+const fmtSize = (b) => (b == null ? '' : b < 1024 ? `${b} B` : b < 1048576 ? `${Math.round(b / 1024)} KB` : `${(b / 1048576).toFixed(1)} MB`);
 
 // Precise date+time stamp for the timeline. The full date is ALWAYS shown
 // alongside the time (e.g. "Today · 24 Jul 2026, 14:32", "Yesterday · 23 Jul
@@ -247,10 +248,11 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
   const [noteToCal, setNoteToCal] = useState(false);
   const [noteCalDate, setNoteCalDate] = useState('');
   const [noteCalTime, setNoteCalTime] = useState('09:00');
-  // Attachments were removed from this screen in Sep 2026 — the uploader was
-  // never used. The API routes (/api/contacts/:id/attachments) still exist and
-  // any files uploaded before then are untouched in the database; only the UI
-  // is gone. Restore from git history if it is ever wanted back.
+  const [dragOver, setDragOver] = useState(false);
+  const [attachments, setAttachments] = useState([]);
+  const [attachNote, setAttachNote] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
   // Neither Save note nor Add to calendar used to say anything when they
   // couldn't act — they just stopped, which reads as a broken button. These
   // hold a short explanation, and the refs let us put the cursor in the box
@@ -316,6 +318,9 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
   const loadHistory = () =>
     fetch(`/api/contacts/${companyId}/history`, { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : [])).then((d) => setHistory(Array.isArray(d) ? d : [])).catch(() => {});
+  const loadAttachments = () =>
+    fetch(`/api/contacts/${companyId}/attachments`, { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : [])).then((d) => setAttachments(Array.isArray(d) ? d : [])).catch(() => {});
   const loadServices = async () => {
     try {
       const r = await fetch(`/api/contracts?contactId=${companyId}&status=active`, { credentials: 'include' });
@@ -340,6 +345,7 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
     })();
     loadTasks();
     loadHistory();
+    loadAttachments();
     loadServices();
     fetch('/api/tickets/users/list', { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : { users: [] }))
@@ -446,6 +452,61 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
 
   // Drag an email file (.eml/.txt) or selected text onto the timeline to log it
   // as a note — uses the same notes endpoint, no extra storage. (Binary files
+  // like PDFs/images are noted by name only; true file storage needs the backend.)
+  // Upload dropped/selected files to durable storage (DB-backed). Optional note
+  // travels with the file(s). Text/emails are still logged via the note box.
+  const uploadFiles = async (files) => {
+    const list = Array.from(files || []);
+    if (!list.length) return;
+    setUploading(true);
+    try {
+      for (const file of list) {
+        if (file.size > 10 * 1024 * 1024) { setError(`${file.name} is over 10MB and was skipped.`); continue; }
+        const fd = new FormData();
+        fd.append('file', file);
+        if (attachNote.trim()) fd.append('note', attachNote.trim());
+        const r = await fetch(`/api/contacts/${companyId}/attachments`, { method: 'POST', credentials: 'include', body: fd });
+        if (!r.ok) throw new Error(`Upload failed (HTTP ${r.status})`);
+      }
+      setAttachNote('');
+      loadAttachments();
+    } catch (e) { setError(e.message || 'Could not upload file'); }
+    finally { setUploading(false); }
+  };
+
+  const deleteAttachment = async (attId) => {
+    if (!window.confirm('Delete this file? This cannot be undone.')) return;
+    try {
+      const r = await fetch(`/api/contacts/${companyId}/attachments/${attId}`, { method: 'DELETE', credentials: 'include' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      loadAttachments();
+    } catch (e) { setError(e.message || 'Could not delete file'); }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+  };
+
+  // Quick-fill for the commonest outcome of a cold call: nobody picked up and
+  // no voicemail was left. Fills the box but does NOT save — the operator still
+  // presses Save note, so nothing can be logged by a mis-click, and they can add
+  // a word before saving if they want to.
+  //
+  // The date is built at click time, never at render or module load: this page
+  // can sit open all day between calls, and a date captured on mount would still
+  // say yesterday after midnight.
+  const fillNoAnswer = () => {
+    const d = new Date();
+    const stamp = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+    const line = `No answer — ${stamp}`;
+    setNoteHint('');
+    // Append rather than overwrite so anything already typed survives.
+    setNoteText((prev) => (prev.trim() ? `${prev.replace(/\s+$/, '')}\n${line}` : line));
+    if (noteRef.current) noteRef.current.focus();
+  };
+
   // Save a note → POST /api/contacts/:id/notes (shows in the timeline below).
   // If "Add to calendar" is ticked, also drop it on the CRM calendar as a
   // follow-up for the chosen date (reuses the existing /api/crm-events endpoint).
@@ -453,6 +514,7 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
     const body = noteText.trim();
     if (!body) {
       // Was a silent no-op. The most common cause is typing into the
+      // attachment note box lower down, so point at the right one.
       setNoteHint('Type your note in the box above first, then press Save note.');
       if (noteRef.current) noteRef.current.focus();
       return;
@@ -831,8 +893,18 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
         </div>
 
         {/* History & notes */}
-        <div style={cardStyle}>
+        <div
+          style={{ ...cardStyle, ...(dragOver ? { outline: `2px dashed ${T.accent}`, outlineOffset: -2 } : {}) }}
+          onDragOver={(e) => { e.preventDefault(); if (!dragOver) setDragOver(true); }}
+          onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOver(false); }}
+          onDrop={handleDrop}
+        >
           <div style={{ ...sectionTitle, marginBottom: 10 }}><Calendar size={16} style={{ color: T.accent, verticalAlign: -2, marginRight: 6 }} />History &amp; notes</div>
+          {dragOver && (
+            <div style={{ fontSize: 12, color: T.accent, fontWeight: 600, marginBottom: 8 }}>
+              Drop files here to attach them
+            </div>
+          )}
           <textarea ref={noteRef} value={noteText} onChange={(e) => { setNoteText(e.target.value); if (noteHint) setNoteHint(''); }} placeholder="Log a call, note or meeting…"
             style={{ ...inputStyle, minHeight: 56, resize: 'vertical' }} />
           <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -843,6 +915,10 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
             <button onClick={() => setReminderForm({ title: '', date: '', time: '09:00', notes: '', templateId: '', blanks: {} })}
               style={{ background: 'transparent', color: T.accent, border: `1px solid ${T.accent}88`, borderRadius: 8, padding: '7px 12px', fontSize: 13, cursor: 'pointer' }}>
               <CalendarPlus size={14} style={{ verticalAlign: -2, marginRight: 4 }} />Add calendar reminder
+            </button>
+            <button onClick={fillNoAnswer} title="Fill the note box with “No answer” and today’s date"
+              style={{ background: 'transparent', color: T.sub, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 12px', fontSize: 13, cursor: 'pointer' }}>
+              <PhoneOff size={14} style={{ verticalAlign: -2, marginRight: 4 }} />No answer
             </button>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: T.sub, cursor: 'pointer', userSelect: 'none' }}>
               <input type="checkbox" checked={noteToCal} onChange={(e) => setNoteToCal(e.target.checked)} style={{ accentColor: T.accent, cursor: 'pointer' }} />
@@ -860,6 +936,55 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
           {noteHint && (
             <div style={{ marginTop: 6, fontSize: 12.5, color: T.accent }}>{noteHint}</div>
           )}
+
+          {/* ── Attachments ── */}
+          {/* The note field below belongs to the FILE uploader, not to History &
+              notes. It used to sit loose under the drop zone and was easily
+              mistaken for the main note box, so it is now boxed in and labelled
+              with the attachments it belongs to. */}
+          <div style={{ marginTop: 12, border: `1px solid ${T.border}`, borderRadius: 10, padding: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4, color: T.muted, textTransform: 'uppercase', marginBottom: 8 }}>
+              Attachments
+            </div>
+            <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }}
+              onChange={(e) => { uploadFiles(e.target.files); e.target.value = ''; }} />
+            <div
+              onClick={() => fileInputRef.current && fileInputRef.current.click()}
+              style={{
+                border: `1.5px dashed ${dragOver ? T.accent : T.border}`, borderRadius: 8, padding: '12px',
+                textAlign: 'center', cursor: 'pointer', background: dragOver ? 'rgba(245,158,11,0.06)' : 'transparent',
+              }}
+            >
+              <Paperclip size={15} style={{ color: T.accent, verticalAlign: -2, marginRight: 6 }} />
+              <span style={{ fontSize: 13, color: T.sub }}>{uploading ? 'Uploading…' : 'Drag files here, or click to browse'}</span>
+            </div>
+            <input value={attachNote} onChange={(e) => setAttachNote(e.target.value)} placeholder="Optional label for the file(s) above…"
+              style={{ ...inputStyle, marginTop: 8 }} />
+            <div style={{ fontSize: 11.5, color: T.muted, marginTop: 4 }}>
+              Only used when you attach a file. To log a call or note, use the box at the top.
+            </div>
+            {attachments.length > 0 && (
+              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {attachments.map((a) => (
+                  <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 10px' }}>
+                    <Paperclip size={14} style={{ color: T.muted, flexShrink: 0 }} />
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <a href={`/api/contacts/${companyId}/attachments/${a.id}/download`} target="_blank" rel="noreferrer"
+                        style={{ fontSize: 13, color: T.text, textDecoration: 'none', fontWeight: 500 }}>{a.filename}</a>
+                      <div style={{ fontSize: 11, color: T.muted }}>
+                        {fmtSize(a.size_bytes)}{a.uploader_name ? ` · ${a.uploader_name}` : ''}{a.created_at ? ` · ${stamp(a.created_at)}` : ''}
+                      </div>
+                      {a.note && <div style={{ fontSize: 12, color: T.sub, marginTop: 2 }}>{a.note}</div>}
+                    </div>
+                    <a href={`/api/contacts/${companyId}/attachments/${a.id}/download`} target="_blank" rel="noreferrer"
+                      title="Download" style={{ color: T.muted, flexShrink: 0, display: 'inline-flex' }}><Download size={15} /></a>
+                    <button onClick={() => deleteAttachment(a.id)} title="Delete"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: T.muted, flexShrink: 0, display: 'inline-flex', padding: 0 }}><Trash2 size={15} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           {reminderForm && (() => {
             const tpl = REMINDER_TEMPLATES.find((t) => t.id === reminderForm.templateId) || null;
@@ -1058,7 +1183,6 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
           <ServiceEmailPanel
             companyId={companyId}
             defaultEmail={company?.email || ''}
-            defaultName={company?.primaryContact || ''}
             onSent={loadHistory}
           />
 
