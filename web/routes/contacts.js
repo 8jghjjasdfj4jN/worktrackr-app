@@ -3,6 +3,7 @@ const router = express.Router();
 const { z } = require('zod');
 const { query, getOrgContext } = require('@worktrackr/shared/db');
 const { cancelFollowupsForContact } = require('../services/serviceEmailBridge');
+const { pushOneStage } = require('../services/studioStageSync');
 
 // Validation schemas
 /**
@@ -803,6 +804,20 @@ router.put('/:id', async (req, res) => {
           if (nextStage === 'dead' || nextStage === 'customer') {
             cancelFollowupsForContact(id, `moved to ${nextStage} stage`);
           }
+
+          // Tell Studio the stage moved, whichever way it moved.
+          //
+          // Broader than the cancel above on purpose. That one only cares
+          // about leaving the pipeline; Studio's keep-warm audience is defined
+          // by WHICH stages are in it, so contacted → prospect ADDS somebody to
+          // the loop exactly as prospect → dead removes them. Only pushing the
+          // exits would leave Studio permanently behind on the entries.
+          //
+          // Deliberately not awaited, same as the cancel: Studio is a separate
+          // service and a slow one must not hold up the user's save. The push
+          // swallows its own errors, and the half-hourly reconcile picks up
+          // anything that did not land.
+          pushOneStage(id, `stage ${prevStage || 'none'} to ${nextStage || 'none'}`);
         }
       }
     } catch (logErr) {

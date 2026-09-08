@@ -34,7 +34,7 @@ const holidaysRoutes = require('./routes/holidays');
 const salesPermissionsRoutes = require('./routes/sales-permissions');
 const savedSearchesRoutes = require('./routes/saved-searches');
 const pricingRoutes = require('./routes/pricing');
-const studioBridgeRoutes = require('./routes/studio-bridge');
+const { startStageSync } = require('./services/studioStageSync');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -169,11 +169,6 @@ app.use('/api/organizations', authenticateToken, organizationsRoutes);
 app.use('/api/contacts', authenticateToken, contactsRoutes);
 app.use('/api/contacts', authenticateToken, contactAttachmentsRoutes);
 app.use('/api/service-emails', authenticateToken, serviceEmailsRoutes); // Sweetbyte Studio bridge: send service email + 7-day follow-up
-
-// INBOUND bridge — Studio calls US. HMAC-signed, NO authenticateToken: there is
-// no logged-in user behind these requests. Tenancy is pinned by
-// STUDIO_BRIDGE_ORG_ID inside the router, which fails closed if unset.
-app.use('/api/studio-bridge', studioBridgeRoutes);
 app.use('/api/holidays', authenticateToken, holidaysRoutes);
 app.use('/api/sales-permissions', authenticateToken, salesPermissionsRoutes);
 app.use('/api/saved-searches', authenticateToken, savedSearchesRoutes);
@@ -352,6 +347,12 @@ async function startServer() {
       console.log(`🚀 WorkTrackr Cloud server running on port ${PORT}`);
       console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`🔗 Base URL: ${process.env.APP_BASE_URL || `http://localhost:${PORT}`}`);
+
+      // Keep Sweetbyte Studio's copy of the sales stages honest. Uses the same
+      // signed connection the service-email panel already uses, so it needs no
+      // configuration of its own. Stage changes push immediately from the
+      // contacts save; this is the periodic reconcile underneath them.
+      startStageSync();
     });
   } catch (error) {
     console.error('Failed to start server:', error);
