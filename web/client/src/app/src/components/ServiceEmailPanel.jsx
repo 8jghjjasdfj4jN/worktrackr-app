@@ -12,6 +12,20 @@
 // an array because the bridge, the database column and Studio's API all speak
 // arrays — narrowing that would be a far wider change than it is worth.
 //
+// Sep 2026 (later): added the "Have you spoken to them?" dropdown.
+//
+// Until now the email's opening was inferred from the Referred by box: blank
+// meant "I spoke to the person receiving this". That inference is wrong often
+// enough to matter. The common case is a switchboard giving you a name and an
+// address without giving you their own name — you have spoken to somebody, you
+// have not spoken to the recipient, and you have no referrer to type. The old
+// panel had no way to say that, so the email claimed a conversation that never
+// happened and the recipient said so in their reply.
+//
+// The dropdown makes the claim explicit and separates it from the referrer's
+// name, which is now only a detail of one of the three answers rather than the
+// thing the whole opening hangs on.
+//
 // A separate file rather than a section inside CompanyProfile.jsx for two
 // reasons. It keeps a 1,200-line file from growing further, and it makes the
 // sub-component rule easy to hold: every piece below is defined at module
@@ -52,6 +66,9 @@ const inputStyle = {
   background: T.base, border: `1px solid ${T.border}`, color: T.text,
   borderRadius: 'var(--wt-radius-md, 8px)', padding: '8px 10px', fontSize: 13, width: '100%',
 };
+const fieldLabel = {
+  fontSize: 11, color: T.sub, marginTop: 10, marginBottom: 4, display: 'block',
+};
 
 // Must match SERVICE_EMAIL_UNDO_SECONDS in Studio's service-email-sender.js.
 // Studio owns the real window; this is only the countdown the caller sees. Set
@@ -64,6 +81,31 @@ const UNDO_SECONDS = 5;
 // 2s covers the normal case with room for a slow SES round trip.
 const CONFIRM_ATTEMPTS = 6;
 const CONFIRM_INTERVAL_MS = 2000;
+
+// Who you actually spoke to on the call this address came from. This value
+// decides the email's opening line, and it travels to Studio as `spokeTo`.
+//
+// Keep these keys in step with Studio's service-email-sender.js. They are a
+// closed set on both sides: the server rejects anything else rather than
+// guessing, because guessing is what produced the wrong email in the first
+// place.
+const SPOKE_TO = [
+  {
+    key: 'them',
+    label: 'I spoke to them',
+    hint: 'The email opens as a follow-up to your conversation with this person.',
+  },
+  {
+    key: 'someone_else',
+    label: 'I spoke to someone else there',
+    hint: 'The email says you spoke to a colleague who passed this address on — not to the person reading it.',
+  },
+  {
+    key: 'nobody',
+    label: 'I have not spoken to anyone',
+    hint: 'The email introduces Sweetbyte cold and makes no claim of a call.',
+  },
+];
 
 const looksLikeEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').trim());
 
@@ -116,7 +158,13 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState(defaultEmail || '');
   const [name, setName] = useState(defaultName || '');
-  // Who passed the address on. Blank = the normal after-a-call email.
+  // Who you spoke to. Defaults to 'them' because that is the ordinary case and
+  // it is also what the panel did before this dropdown existed — the default
+  // changes nothing for a caller who ignores the field. The difference is that
+  // the claim is now visible on screen and can be corrected in one tap.
+  const [spokeTo, setSpokeTo] = useState('them');
+  // Who passed the address on. Only meaningful when spokeTo is 'someone_else',
+  // and only ever sent in that case.
   const [referrer, setReferrer] = useState('');
   const [alreadySent, setAlreadySent] = useState(false);
   const [sending, setSending] = useState(false);
@@ -132,7 +180,7 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
   // address mid-type if the parent re-rendered.
   useEffect(() => { setEmail(defaultEmail || ''); }, [companyId, defaultEmail]);
   useEffect(() => { setName(defaultName || ''); }, [companyId, defaultName]);
-  useEffect(() => { setReferrer(''); }, [companyId]);
+  useEffect(() => { setReferrer(''); setSpokeTo('them'); }, [companyId]);
 
   // Catalogue — served by WorkTrackr from Studio, cached server-side for 5
   // minutes. One service now, but still read over the wire so the label can be
@@ -246,7 +294,13 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
           // indistinguishable from an older client that never had one, and the
           // server would fall back to the stored contact.
           contactName: name.trim(),
-          referrerName: referrer.trim(),
+          // The claim about the call. The server no longer has to infer this
+          // from whether the referrer box is empty.
+          spokeTo,
+          // Only meaningful alongside 'someone_else'. Cleared here as well as
+          // on the server so a name typed and then switched away from can't
+          // ride along into an email that doesn't mention a colleague.
+          referrerName: spokeTo === 'someone_else' ? referrer.trim() : '',
           services: [services[0].key],
         }),
       });
@@ -318,6 +372,7 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
   const busy = sending || !!pending;
   const label = services.length ? services[0].label : 'Send';
   const blocked = busy || loading || alreadySent;
+  const spokeToHint = (SPOKE_TO.find(o => o.key === spokeTo) || SPOKE_TO[0]).hint;
 
   return (
     <div style={cardStyle}>
@@ -344,21 +399,42 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
         style={{ ...inputStyle, marginTop: 8 }}
       />
 
-      <input
-        type="text"
-        value={referrer}
-        onChange={(e) => { setReferrer(e.target.value); setStatus(null); }}
-        placeholder="Referred by (optional)"
-        autoComplete="off"
-        style={{ ...inputStyle, marginTop: 8 }}
-      />
+      <label style={fieldLabel} htmlFor="wt-spoke-to">
+        Have you spoken to the person receiving this?
+      </label>
+      <select
+        id="wt-spoke-to"
+        value={spokeTo}
+        onChange={(e) => { setSpokeTo(e.target.value); setStatus(null); }}
+        style={{ ...inputStyle, cursor: 'pointer' }}
+      >
+        {SPOKE_TO.map((o) => (
+          <option key={o.key} value={o.key} style={{ background: T.base, color: T.text }}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+
+      {/* The referrer's name is a detail of one answer, not a field with its
+          own hidden meaning, so it appears only when that answer is chosen.
+          Leaving it blank there is fine — "a colleague" is a perfectly good
+          way to describe someone whose name you never got, and that case is
+          exactly why this dropdown exists. */}
+      {spokeTo === 'someone_else' && (
+        <input
+          type="text"
+          value={referrer}
+          onChange={(e) => { setReferrer(e.target.value); setStatus(null); }}
+          placeholder="Who you spoke to (optional)"
+          autoComplete="off"
+          style={{ ...inputStyle, marginTop: 8 }}
+        />
+      )}
 
       <div style={{ fontSize: 11, color: T.muted, marginTop: 6, lineHeight: 1.5 }}>
-        Leave the name blank and the email opens with "Hi there".
+        {spokeToHint}
         <br />
-        Fill in <strong>Referred by</strong> when you spoke to someone else and they
-        gave you this address — the email then says you spoke to them, not to the
-        person receiving it.
+        Leave the name blank and the email opens with "Hi there".
       </div>
 
       <button

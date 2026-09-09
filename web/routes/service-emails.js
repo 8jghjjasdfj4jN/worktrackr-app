@@ -2,10 +2,11 @@
 //
 // Service emails — the WorkTrackr half of the Sweetbyte Studio integration.
 //
-// After a cold call the salesperson types the address they were given, taps
-// one or more services, and taps Send. This route signs the request, hands it
-// to Studio, and records what happened locally. Studio owns everything after
-// that: the 10-second undo window, the send, the 7-day follow-up, suppression.
+// After a cold call the salesperson types the address they were given, says
+// who they actually spoke to, and taps Send. This route signs the request,
+// hands it to Studio, and records what happened locally. Studio owns
+// everything after that: the 10-second undo window, the send, the 7-day
+// follow-up, suppression — and the wording of the email itself.
 //
 // Contract is documented in Sweetbyte's SERVICE_EMAILS_INTEGRATION.md. Keep the
 // two in step.
@@ -96,6 +97,16 @@ router.get('/company/:contactId', async (req, res) => {
 });
 
 // ── Send ─────────────────────────────────────────────────────────────────────
+
+// Who the caller actually spoke to. Studio turns this into the email's opening.
+// A closed set on both sides, and anything outside it is rejected rather than
+// guessed at — guessing is what produced the wrong email in the first place.
+//
+//   them          the recipient themselves; the ordinary after-a-call email
+//   someone_else  a colleague at the same company, named or not
+//   nobody        no conversation happened at all
+const SPOKE_TO_VALUES = ['them', 'someone_else', 'nobody'];
+
 const sendSchema = z.object({
   contactId: z.string().uuid(),
   email: z.string().email(),
@@ -103,8 +114,10 @@ const sendSchema = z.object({
   // which is meaningful — it means "fall back to the company's primary
   // contact, then to 'Hi there'". Capped because it lands in a subject line.
   contactName: z.string().trim().max(80).nullish(),
-  // Who passed the address on, when the recipient is not the person called.
-  // Present and empty means "no referrer" — the normal after-a-call email.
+  // Absent from older clients, which is why it is optional here rather than
+  // required. See the fallback below.
+  spokeTo: z.enum(SPOKE_TO_VALUES).nullish(),
+  // Who passed the address on. Only carries meaning alongside 'someone_else'.
   referrerName: z.string().trim().max(80).nullish(),
   services: z.array(z.string().min(1)).min(1).max(20),
 });
@@ -168,7 +181,7 @@ router.post('/send', async (req, res) => {
 
     const parsed = sendSchema.safeParse(req.body || {});
     if (!parsed.success) return res.status(400).json({ error: 'Invalid input' });
-    const { contactId, email, contactName, referrerName, services } = parsed.data;
+    const { contactId, email, contactName, spokeTo, referrerName, services } = parsed.data;
 
     // Company details come from the DB, never from the request body — the
     // client shouldn't be able to put someone else's company name on an email.
@@ -195,12 +208,28 @@ router.post('/send', async (req, res) => {
       ? (company.primary_contact || null)
       : (contactName.trim() || null);
 
+    // Who was spoken to. A client that predates the dropdown sends nothing, so
+    // fall back to the old inference for exactly that case: a referrer name
+    // meant a colleague, no referrer name meant the recipient. That inference
+    // is the thing the dropdown exists to replace, so it is applied here only
+    // when there is genuinely no better answer available.
+    const spokeToForEmail = spokeTo
+      || ((referrerName && referrerName.trim()) ? 'someone_else' : 'them');
+
+    // The referrer's name only says anything in the colleague case. Dropping it
+    // otherwise stops a name typed and then switched away from riding along
+    // into an email that makes no mention of a colleague.
+    const referrerForEmail = spokeToForEmail === 'someone_else'
+      ? ((referrerName && referrerName.trim()) || null)
+      : null;
+
     const studio = await callStudio('POST', '/send', {
       body: {
         externalCompanyId: contactId,
         companyName: company.name,
         contactName: nameForEmail,
-        referrerName: (referrerName && referrerName.trim()) || null,
+        spokeTo: spokeToForEmail,
+        referrerName: referrerForEmail,
         toEmail: email,
         services,
       },
@@ -220,8 +249,22 @@ router.post('/send', async (req, res) => {
     // Timeline entry. Written now rather than after the undo window because
     // WorkTrackr has no scheduler — undo deletes it again, so an undone email
     // leaves no trace.
+    //
+    // The call context goes in the note as well as into the email. Weeks later,
+    // when someone asks why a reply says "we have not spoken", the timeline is
+    // where the answer needs to be.
+    const contextLine =
+      spokeToForEmail === 'them'
+        ? 'Sent after speaking to them directly.'
+        : spokeToForEmail === 'someone_else'
+          ? (referrerForEmail
+            ? `Sent after speaking to ${referrerForEmail}, who passed the address on.`
+            : 'Sent after speaking to a colleague, who passed the address on.')
+          : 'Sent without having spoken to anyone.';
+
     const noteBody =
       `Service email sent to ${email} — ${sentKeys.join(', ')}. ` +
+      `${contextLine} ` +
       `Follow-up scheduled for 7 days' time.`;
     const note = await query(
       `INSERT INTO contact_notes (organisation_id, contact_id, kind, subject, body, created_by)
