@@ -80,6 +80,16 @@ export function noAnswerCount(co) {
   return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
 }
 
+// Calendar days until the call-back: negative = overdue, 0 = today.
+// Returns null when there is no usable date, so callers can skip the row.
+//
+// ⚠️ CALENDAR days, not working days. A no answer pressed on a Friday is due
+// the following Wednesday — 3 working days, but 5 calendar days — so this can
+// legitimately return up to 5.
+export function daysUntilDue(co) {
+  return dayDiff(todayKey(), co && co.crm ? co.crm.noAnswerDue : null);
+}
+
 // true once the call-back date has arrived (or passed)
 export function isDue(co) {
   const diff = dayDiff(todayKey(), co && co.crm ? co.crm.noAnswerDue : null);

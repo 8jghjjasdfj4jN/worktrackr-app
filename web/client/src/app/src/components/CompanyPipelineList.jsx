@@ -28,7 +28,7 @@ import CompanyFilterModal from './CompanyFilterModal.jsx';
 import { logCall, CALL_LOGGED_EVENT } from './callLog.js';
 import { confirmDial } from './dialConfirm.js';
 import {
-  isAwaitingCallBack, isDue, dueLabel, attemptLabel, byDueSoonest, CLEAR_CALL_BACK,
+  isAwaitingCallBack, isDue, dueLabel, attemptLabel, byDueSoonest, daysUntilDue, CLEAR_CALL_BACK,
 } from './noAnswer.js';
 import SalesPageLayout, {
   SalesSearch, SalesPrimaryButton, SalesSecondaryButton,
@@ -589,6 +589,10 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
     return () => { alive = false; };
   }, []);
 
+  // Which call-backs to show when the No answer chip is on: 'all', 'overdue',
+  // or a number of days as text ('0' = today, '1' = tomorrow…).
+  const [noAnswerWhen, setNoAnswerWhen] = useState('all');
+
   const userName = useMemo(() => {
     const m = new Map(users.map((u) => [String(u.id), u.name || u.email || 'Unnamed user']));
     return (id) => m.get(String(id)) || 'Unknown user';
@@ -628,9 +632,18 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
     // Only the No answer view is re-ordered, and only when it is the ONLY thing
     // ticked — the point of that list is to work the most overdue call-backs
     // first. Every other view keeps the order it has always had.
-    if (chosen.length === 1 && chosen[0] === NO_ANSWER) return rows.slice().sort(byDueSoonest);
+    if (chosen.length === 1 && chosen[0] === NO_ANSWER) {
+      const narrowed = noAnswerWhen === 'all'
+        ? rows
+        : rows.filter((co) => {
+          const d = daysUntilDue(co);
+          if (d === null) return false;
+          return noAnswerWhen === 'overdue' ? d < 0 : String(d) === noAnswerWhen;
+        });
+      return narrowed.slice().sort(byDueSoonest);
+    }
     return rows;
-  }, [filtered, filterSel]);
+  }, [filtered, filterSel, noAnswerWhen]);
 
   // ⚠️ Counted through valuesFor, NOT off crm.salesStage directly, so every
   // badge agrees with the rows the list actually shows. A company waiting on a
@@ -657,6 +670,32 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
     () => filtered.filter((co) => isAwaitingCallBack(co) && isDue(co)).length,
     [filtered]
   );
+
+  // Options for the "when to call" dropdown, counted off the real rows so a
+  // choice that would show an empty list is never offered.
+  const noAnswerWhenOptions = useMemo(() => {
+    const tally = new Map();
+    for (const co of filtered) {
+      if (!isAwaitingCallBack(co)) continue;
+      const d = daysUntilDue(co);
+      if (d === null) continue;
+      const k = d < 0 ? 'overdue' : String(d);
+      tally.set(k, (tally.get(k) || 0) + 1);
+    }
+    const out = [];
+    if (tally.has('overdue')) out.push({ value: 'overdue', label: 'Overdue', count: tally.get('overdue') });
+    if (tally.has('0'))       out.push({ value: '0', label: 'Call today', count: tally.get('0') });
+    Array.from(tally.keys())
+      .filter((k) => k !== 'overdue' && k !== '0')
+      .map(Number)
+      .sort((a, b) => a - b)
+      .forEach((d) => out.push({
+        value: String(d),
+        label: d === 1 ? 'Call in 1 day' : `Call in ${d} days`,
+        count: tally.get(String(d)),
+      }));
+    return out;
+  }, [filtered]);
 
   // Build the pop-up's tick-box groups from the loaded companies. Options with
   // a zero count are dropped, and a group with no options at all is hidden.
@@ -703,7 +742,11 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
   // toggle one stage from a badge (the pop-up writes the same state)
   const toggleStage = (key) => setFilterSel((prev) => {
     const cur = prev.stages || [];
-    return { ...prev, stages: cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key] };
+    const on = cur.includes(key);
+    // Leaving the No answer view clears its day filter. Otherwise coming back
+    // to it later would silently show a narrowed list with no obvious cause.
+    if (key === NO_ANSWER && on) setNoAnswerWhen('all');
+    return { ...prev, stages: on ? cur.filter((k) => k !== key) : [...cur, key] };
   });
 
   // ── Saved searches: readable summary + actions ───────────────────────────
@@ -945,6 +988,20 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
               {s.label} <span className="opacity-60">{counts[s.key] || 0}</span>
             </button>
           ))}
+
+          {(filterSel.stages || []).length === 1 && (filterSel.stages || [])[0] === NO_ANSWER && noAnswerWhenOptions.length > 0 && (
+            <select
+              value={noAnswerWhen}
+              onChange={(e) => setNoAnswerWhen(e.target.value)}
+              title="Narrow the no answers by when they are due a call"
+              className="rounded-full border border-[#2e2e4a] bg-[#242438] px-3 py-1.5 text-[13px] text-[#cbd5e1]"
+            >
+              <option value="all">All no answers ({noAnswerTotal})</option>
+              {noAnswerWhenOptions.map((o) => (
+                <option key={o.value} value={o.value}>{o.label} ({o.count})</option>
+              ))}
+            </select>
+          )}
 
           {/* advanced tick-box filter — sits right after the badges */}
           <span className="mx-1 h-5 w-px bg-[#2e2e4a]" />
