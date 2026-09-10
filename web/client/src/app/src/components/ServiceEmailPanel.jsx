@@ -166,6 +166,11 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
   // Who passed the address on. Only meaningful when spokeTo is 'someone_else',
   // and only ever sent in that case.
   const [referrer, setReferrer] = useState('');
+  // Set when Send is pressed with the name box empty. The email is NOT sent on
+  // that press — the panel asks first, and a second press goes through. Purely
+  // a memory jog: a blank name is legitimate and always allowed, it just should
+  // not happen by accident when a name was written down and not typed in.
+  const [needName, setNeedName] = useState(false);
   const [alreadySent, setAlreadySent] = useState(false);
   const [sending, setSending] = useState(false);
   const [status, setStatus] = useState(null);      // { tone, text }
@@ -174,6 +179,7 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
 
   // Guards the countdown interval so it can be cleared from anywhere without
   // reaching through a stale closure.
+  const nameRef = useRef(null);
   const timerRef = useRef(null);
 
   // Prefill only on company change. Re-prefilling on every render would wipe an
@@ -279,7 +285,14 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
       setStatus({ tone: 'error', text: 'The service list did not load — reload the page.' });
       return;
     }
+    // Ask once about a missing name, then get out of the way.
+    if (!name.trim() && !needName) {
+      setNeedName(true);
+      setStatus(null);
+      return;
+    }
 
+    setNeedName(false);
     setSending(true);
     setStatus(null);
     try {
@@ -391,12 +404,16 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
       />
 
       <input
+        ref={nameRef}
         type="text"
         value={name}
-        onChange={(e) => { setName(e.target.value); setStatus(null); }}
+        onChange={(e) => { setName(e.target.value); setStatus(null); setNeedName(false); }}
         placeholder="Their name (optional)"
         autoComplete="off"
-        style={{ ...inputStyle, marginTop: 8 }}
+        style={{
+          ...inputStyle, marginTop: 8,
+          border: needName ? `1px solid ${T.accent}` : inputStyle.border,
+        }}
       />
 
       <label style={fieldLabel} htmlFor="wt-spoke-to">
@@ -437,6 +454,29 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
         Leave the name blank and the email opens with "Hi there".
       </div>
 
+      {needName && !blocked && (
+        <div style={{
+          marginTop: 10, padding: '8px 10px', borderRadius: 8,
+          border: `1px solid ${T.accent}`, background: 'transparent',
+          fontSize: 12.5, color: T.text, lineHeight: 1.5,
+        }}>
+          No name entered. The email will open with “Hi there”.
+          {' '}
+          <button
+            type="button"
+            onClick={() => { setNeedName(false); if (nameRef.current) nameRef.current.focus(); }}
+            style={{
+              background: 'none', border: 'none', padding: 0,
+              color: T.accent, fontSize: 12.5, cursor: 'pointer',
+              textDecoration: 'underline', textUnderlineOffset: 2,
+            }}
+          >
+            Add a name
+          </button>
+          {' '}or press the button again to send without one.
+        </div>
+      )}
+
       <button
         type="button"
         onClick={send}
@@ -452,7 +492,7 @@ export default function ServiceEmailPanel({ companyId, defaultEmail, defaultName
         }}
       >
         {sending && <Loader2 size={14} className="animate-spin" />}
-        {sending ? 'Sending…' : loading ? 'Loading…' : label}
+        {sending ? 'Sending…' : loading ? 'Loading…' : (needName ? 'Send without a name' : label)}
       </button>
 
       {pending && <UndoBar seconds={pending.seconds} onUndo={undo} busy={undoing} />}
