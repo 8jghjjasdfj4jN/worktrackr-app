@@ -22,11 +22,14 @@
 //
 // Props (unchanged): onOpenCompany(id), onAddCompany().
 import React, { useEffect, useMemo, useState } from 'react';
-import { Upload, MoreHorizontal, Clock, List, Columns3, Phone, PhoneCall, Mail, ChevronDown, Building2, SlidersHorizontal, Calendar } from 'lucide-react';
+import { Upload, MoreHorizontal, Clock, List, Columns3, Phone, PhoneCall, PhoneOff, Mail, ChevronDown, Building2, SlidersHorizontal, Calendar } from 'lucide-react';
 import CsvImport from './CsvImport.jsx';
 import CompanyFilterModal from './CompanyFilterModal.jsx';
 import { logCall, CALL_LOGGED_EVENT } from './callLog.js';
 import { confirmDial } from './dialConfirm.js';
+import {
+  isAwaitingCallBack, isDue, dueLabel, attemptLabel, byDueSoonest, CLEAR_CALL_BACK,
+} from './noAnswer.js';
 import SalesPageLayout, {
   SalesSearch, SalesPrimaryButton, SalesSecondaryButton,
 } from './SalesPageLayout.jsx';
@@ -67,6 +70,14 @@ const telHref = (p) => {
 // Sentinel for the "No stage" filter chip: companies whose salesStage is missing
 // or unrecognised (exactly the rows that render the grey "No stage" pill).
 const NO_STAGE = '__nostage__';
+// Sentinel for the "No answer" filter chip: companies waiting on a call-back
+// after nobody picked up.
+//
+// ⚠️ valuesFor() returns EITHER this OR a stage, never both. That is what takes
+// a call-back out of the No stage pool: pressing No answer must remove the
+// company from the list being cold-called, or it gets rung again the same day.
+// It stays in "All", so searching still finds it.
+const NO_ANSWER = '__noanswer__';
 // One colour per service so a tag is recognisable at a glance without reading
 // it. Fixed by key, not by position, so adding a service never re-colours the
 // existing ones.
@@ -82,8 +93,6 @@ const INTEREST_TAG = {
   voip:           'bg-[rgba(186,117,23,0.20)] text-[#EF9F27]',
   custom_apps:    'bg-[rgba(216,90,48,0.18)] text-[#F0997B]',
 };
-
-const isNoStage = (co) => !STAGE_BY_KEY[co?.crm?.salesStage];
 
 // ── Filter pop-up plumbing ──────────────────────────────────────────────────
 // Every option offered in the Filter pop-up is derived from the companies that
@@ -142,7 +151,7 @@ const MISSING_LABEL = { no_phone: 'No phone', no_email: 'No email', no_website: 
 const CHASE_LABEL   = { overdue: 'Overdue', today: 'Due today', future: 'Upcoming', none: 'No chase date' };
 // groups whose options read best in a fixed order rather than alphabetically
 const FIXED_ORDER = {
-  stages:  [NO_STAGE, ...STAGES.map((s) => s.key)],
+  stages:  [NO_ANSWER, NO_STAGE, ...STAGES.map((s) => s.key)],
   missing: ['no_phone', 'no_email', 'no_website', 'no_address'],
   chase:   ['overdue', 'today', 'future', 'none'],
 };
@@ -177,7 +186,9 @@ const chaseBucket = (co) => {
 function valuesFor(co, key) {
   const crm = co?.crm || {};
   switch (key) {
-    case 'stages':     return [STAGE_BY_KEY[crm.salesStage] ? crm.salesStage : NO_STAGE];
+    case 'stages':
+      if (isAwaitingCallBack(co)) return [NO_ANSWER];
+      return [STAGE_BY_KEY[crm.salesStage] ? crm.salesStage : NO_STAGE];
     case 'sources':    return hasText(crm.source)        ? [String(crm.source).trim()]      : [];
     case 'industries': return hasText(crm.industry)      ? [String(crm.industry).trim()]    : [];
     case 'sizes':      return hasText(crm.companySize)   ? [String(crm.companySize).trim()] : [];
@@ -611,23 +622,51 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
 
   const listVisible = useMemo(() => {
     const chosen = filterSel.stages || [];
-    if (!chosen.length) return filtered;
-    return filtered.filter((co) => chosen.includes(valuesFor(co, 'stages')[0]));
+    const rows = chosen.length
+      ? filtered.filter((co) => chosen.includes(valuesFor(co, 'stages')[0]))
+      : filtered;
+    // Only the No answer view is re-ordered, and only when it is the ONLY thing
+    // ticked — the point of that list is to work the most overdue call-backs
+    // first. Every other view keeps the order it has always had.
+    if (chosen.length === 1 && chosen[0] === NO_ANSWER) return rows.slice().sort(byDueSoonest);
+    return rows;
   }, [filtered, filterSel]);
 
+  // ⚠️ Counted through valuesFor, NOT off crm.salesStage directly, so every
+  // badge agrees with the rows the list actually shows. A company waiting on a
+  // call-back counts once, under No answer, and nowhere else — otherwise the
+  // No stage badge would keep counting companies it no longer lists.
   const counts = useMemo(() => {
     const c = {};
-    for (const co of filtered) { const k = co?.crm?.salesStage; if (STAGE_BY_KEY[k]) c[k] = (c[k] || 0) + 1; }
+    for (const co of filtered) {
+      const k = valuesFor(co, 'stages')[0];
+      if (STAGE_BY_KEY[k]) c[k] = (c[k] || 0) + 1;
+    }
     return c;
   }, [filtered]);
 
-  const noStageCount = useMemo(() => filtered.filter(isNoStage).length, [filtered]);
+  const noStageCount = useMemo(
+    () => filtered.filter((co) => valuesFor(co, 'stages')[0] === NO_STAGE).length,
+    [filtered]
+  );
+
+  // Split so the chip can say how many are actually ready to ring today,
+  // rather than only how many are on the list.
+  const noAnswerTotal = useMemo(() => filtered.filter(isAwaitingCallBack).length, [filtered]);
+  const noAnswerReady = useMemo(
+    () => filtered.filter((co) => isAwaitingCallBack(co) && isDue(co)).length,
+    [filtered]
+  );
 
   // Build the pop-up's tick-box groups from the loaded companies. Options with
   // a zero count are dropped, and a group with no options at all is hidden.
   const filterGroups = useMemo(() => {
     const labelFor = (key, v) => {
-      if (key === 'stages')   return v === NO_STAGE ? 'No stage' : (STAGE_BY_KEY[v]?.label || v);
+      if (key === 'stages') {
+        if (v === NO_ANSWER) return 'No answer';
+        if (v === NO_STAGE)  return 'No stage';
+        return STAGE_BY_KEY[v]?.label || v;
+      }
       if (key === 'statuses') return STATUS_LABEL[v] || v;
       if (key === 'missing')  return MISSING_LABEL[v] || v;
       if (key === 'chase')    return CHASE_LABEL[v] || v;
@@ -736,10 +775,39 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
   const canDeleteSaved = (s) =>
     isManager || (currentUser?.id && String(s?.createdBy || '') === String(currentUser.id));
 
+  // ── One-off recovery of no answers logged before the button saved ────────
+  // Two presses on purpose: the first only LOOKS and reports a count, the
+  // second writes. Nothing is changed until the count has been seen.
+  const [backfill, setBackfill] = useState(null);   // null | { found, oldest, companies, committed }
+  const [backfillBusy, setBackfillBusy] = useState(false);
+
+  const runBackfill = async (commit) => {
+    setBackfillBusy(true);
+    try {
+      const r = await fetch(`/api/contacts/no-answer-backfill${commit ? '?commit=1' : ''}`, {
+        credentials: 'include',
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      if (d && d.ok === false) {
+        setBackfill({ found: 0, error: 'Couldn’t read the old notes.' });
+      } else {
+        setBackfill(d);
+        if (commit) setReload((x) => x + 1);   // pull the list again so they appear
+      }
+    } catch (e) {
+      setBackfill({ found: 0, error: e.message || 'Couldn’t check the old notes.' });
+    } finally {
+      setBackfillBusy(false);
+    }
+  };
+
   // move stage safely: re-send the WHOLE crm object with only salesStage changed
   const moveStage = async (co, newKey) => {
     try {
-      const nextCrm = { ...(co.crm || {}), salesStage: newKey };
+      // Moving a stage means somebody got through, so this also takes the
+      // company off the No answer call-back list (the attempt count is kept).
+      const nextCrm = { ...(co.crm || {}), salesStage: newKey, ...CLEAR_CALL_BACK };
       const r = await fetch(`/api/contacts/${co.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -852,6 +920,16 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
           >
             All <span className="opacity-60">{filtered.length}</span>
           </button>
+          {noAnswerTotal > 0 && (
+            <button
+              onClick={() => toggleStage(NO_ANSWER)}
+              title="Companies that didn’t answer — ready ones first"
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] bg-[rgba(245,158,11,0.20)] text-[#fcd34d] ${(filterSel.stages || []).includes(NO_ANSWER) ? 'outline outline-2 outline-[#f59e0b]' : ''}`}
+            >
+              <PhoneOff className="w-3.5 h-3.5" />
+              No answer <span className="opacity-60">{noAnswerReady > 0 ? `${noAnswerReady} of ${noAnswerTotal}` : noAnswerTotal}</span>
+            </button>
+          )}
           <button
             onClick={() => toggleStage(NO_STAGE)}
             className={`rounded-full px-3 py-1.5 text-[13px] bg-[rgba(107,114,128,0.20)] text-[#cbd5e1] ${(filterSel.stages || []).includes(NO_STAGE) ? 'outline outline-2 outline-[#f59e0b]' : ''}`}
@@ -881,6 +959,16 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
             <SlidersHorizontal className="w-4 h-4" />
             Filter{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}
           </button>
+          {!backfill && (
+            <button
+              onClick={() => runBackfill(false)}
+              disabled={backfillBusy}
+              title="Look for no answers logged before the button started saving (last 7 days)"
+              className="text-[13px] text-[#94a3b8] hover:text-white underline underline-offset-2"
+            >
+              {backfillBusy ? 'Checking…' : 'Find old no answers'}
+            </button>
+          )}
           {(activeFilterCount > 0 || search.trim()) && (
             <button
               onClick={clearFilters}
@@ -946,8 +1034,47 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
   const LIST_GRID = showInterests
     ? 'grid grid-cols-[minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(0,1.1fr)_minmax(0,1.7fr)_minmax(0,1.2fr)] gap-3'
     : 'grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.5fr)_minmax(0,0.9fr)] gap-3';
+  const backfillPanel = backfill && (
+    <div className="mb-3 rounded-xl border border-[#2e2e4a] bg-[#242438] px-4 py-3 text-[13px]">
+      {backfill.error ? (
+        <span className="text-[#fca5a5]">{backfill.error}</span>
+      ) : backfill.committed ? (
+        <span className="text-[#6ee7b7]">
+          Added {backfill.written} {backfill.written === 1 ? 'company' : 'companies'} to the No answer list. They all show as ready to call now.
+        </span>
+      ) : backfill.found > 0 ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-[#cbd5e1]">
+            Found {backfill.found} {backfill.found === 1 ? 'company' : 'companies'} you logged a no answer for in the last 7 days
+            {backfill.oldest ? `, going back to ${backfill.oldest}` : ''}.
+          </span>
+          <button
+            onClick={() => runBackfill(true)}
+            disabled={backfillBusy}
+            className="rounded-lg bg-[#f59e0b] px-3 py-1.5 text-[13px] font-medium text-[#1f1f33]"
+          >
+            {backfillBusy ? 'Adding…' : 'Add them to the list'}
+          </button>
+          <button onClick={() => setBackfill(null)} className="text-[#94a3b8] hover:text-white underline underline-offset-2">
+            Leave them
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-[#94a3b8]">
+            Nothing found. Only no answers saved with a note in the last 7 days can be recovered.
+          </span>
+          <button onClick={() => setBackfill(null)} className="text-[#94a3b8] hover:text-white underline underline-offset-2">
+            Close
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
   const list = (
     <>
+      {backfillPanel}
       <div className={`${LIST_GRID} px-4 py-2.5 bg-[#1f1f33] text-[11px] uppercase tracking-wide text-[#6b7280]`}>
         {showInterests ? (
           <>
@@ -981,9 +1108,19 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
             <div className="min-w-0">
               <div className="text-sm font-medium text-white truncate">{co.name}</div>
               <div className="mt-1 flex items-center gap-2">
-                <span className={`inline-block rounded-md px-2 py-0.5 text-[11px] ${STAGE_BY_KEY[co?.crm?.salesStage]?.pill || 'bg-[rgba(107,114,128,0.20)] text-[#cbd5e1]'}`}>
-                  {STAGE_BY_KEY[co?.crm?.salesStage]?.label || 'No stage'}
-                </span>
+                {isAwaitingCallBack(co) ? (
+                  <span
+                    className={`inline-block rounded-md px-2 py-0.5 text-[11px] ${isDue(co) ? 'bg-[rgba(245,158,11,0.20)] text-[#fcd34d]' : 'bg-[rgba(107,114,128,0.20)] text-[#cbd5e1]'}`}>
+                    No answer · call back {dueLabel(co)}
+                  </span>
+                ) : (
+                  <span className={`inline-block rounded-md px-2 py-0.5 text-[11px] ${STAGE_BY_KEY[co?.crm?.salesStage]?.pill || 'bg-[rgba(107,114,128,0.20)] text-[#cbd5e1]'}`}>
+                    {STAGE_BY_KEY[co?.crm?.salesStage]?.label || 'No stage'}
+                  </span>
+                )}
+                {isAwaitingCallBack(co) && attemptLabel(co) && (
+                  <span className="text-[11px] text-[#6b7280] truncate">{attemptLabel(co)}</span>
+                )}
                 {owner && <span className="text-[11px] text-[#6b7280] truncate">{owner}</span>}
               </div>
             </div>

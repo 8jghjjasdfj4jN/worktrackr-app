@@ -62,6 +62,14 @@ const contactSchema = z.object({
     firstContact: z.string().optional().nullable(),   // date first actually spoke (yyyy-mm-dd)
     chaseDate: z.string().optional().nullable(),       // date to next chase (yyyy-mm-dd)
     nextAction: z.string().optional(),                 // free text, e.g. "Call back"
+    // ── "No answer → call back" (Companies › No answer chip) ──────────────
+    // Written when the No answer button is pressed on the company profile.
+    // ⚠️ Deliberately .optional().nullable() with NO .default(): a default
+    // would silently reset the attempt count to 0 on any PUT that happened
+    // not to include the key.
+    noAnswerCount: z.number().optional().nullable(),   // how many times they didn't answer
+    noAnswerLast: z.string().optional().nullable(),    // date last tried (yyyy-mm-dd, London)
+    noAnswerDue: z.string().optional().nullable(),     // date to call back (yyyy-mm-dd); null = off the list
     archived: z.boolean().optional().default(false),   // archived leads are hidden from salesmen
     archivedAt: z.string().optional().nullable(),
     lastActivity: z.string().optional().nullable(),
@@ -337,6 +345,125 @@ router.get('/call-count', async (req, res) => {
     // Report zeroes rather than breaking the Sales page over a counter.
     console.error('Error fetching call count:', error);
     res.json({ today: 0, yesterday: 0, last7: 0, unavailable: true });
+  }
+});
+
+// GET /api/contacts/no-answer-backfill — ONE-OFF recovery of no answers that
+// were logged BEFORE the No answer button started saving properly.
+//
+// Until 2026-09-10 the button only typed "No answer — dd/mm/yyyy" into the note
+// box, so the only trace of an old no answer is that line inside a saved note.
+// This reads those notes back and stamps the call-back fields the No answer list
+// reads, for the LAST 7 DAYS only (owner's choice).
+//
+// ?commit=1 writes. WITHOUT it this only looks and reports, so the count can be
+// checked before anything is changed.
+//
+// ⚠️ MUST be declared BEFORE router.get('/:id') or Express matches '/:id' first
+// and treats "no-answer-backfill" as a contact id.
+//
+// Deliberately NOT a migration: migrations run at boot inside a transaction, so
+// a mistake there stops the server starting. Here a mistake is one failed
+// button press. The matching, counting and date maths are all done in JS below
+// rather than in SQL, for the same reason.
+//
+// Scoped to the caller's own organisation on BOTH tables, and it only ever
+// writes the three noAnswer* keys. No money, commission or pay data is touched.
+router.get('/no-answer-backfill', async (req, res) => {
+  try {
+    const { organizationId } = await getOrgContext(req.user.userId);
+    const commit = String(req.query.commit || '') === '1';
+
+    // One join, no arrays and no casts — the shape is copied from the
+    // /:id/history query that is already running in production. The 7 days is
+    // a fixed literal rather than a parameter so there is no interval cast to
+    // get wrong. Wrapped so a missing contact_notes table reports cleanly
+    // instead of throwing.
+    let rows = [];
+    try {
+      const r = await query(
+        `SELECT n.contact_id,
+                n.body,
+                (n.created_at AT TIME ZONE 'Europe/London')::date AS tried_on,
+                c.name,
+                c.crm
+           FROM contact_notes n
+           JOIN contacts c ON c.id = n.contact_id
+          WHERE n.organisation_id = $1
+            AND c.organisation_id = $1
+            AND n.body LIKE '%No answer%'
+            AND n.created_at >= NOW() - INTERVAL '7 days'`,
+        [organizationId]
+      );
+      rows = r.rows;
+    } catch (e) {
+      console.error('no-answer-backfill: could not read notes:', e);
+      return res.json({ ok: false, reason: 'notes-unavailable', found: 0, companies: [] });
+    }
+
+    // The exact line the old button wrote. The separator is an em dash (—),
+    // not a hyphen, and the date is dd/mm/yyyy.
+    const LINE = /No answer\s+—\s+(\d{2})\/(\d{2})\/(\d{4})/g;
+
+    const byContact = new Map();
+    for (const row of rows) {
+      const crm = row.crm || {};
+      // Skip anyone already on the list, anyone archived, and anyone who has
+      // been given a stage — a stage means somebody got through, so dragging
+      // them back onto the call-back list would be wrong.
+      if (crm.noAnswerDue) continue;
+      if (String(crm.archived) === 'true' || crm.archived === true) continue;
+      if (crm.salesStage) continue;
+
+      const hits = String(row.body || '').match(LINE);
+      if (!hits || !hits.length) continue;
+
+      const triedOn = row.tried_on instanceof Date
+        ? `${row.tried_on.getFullYear()}-${String(row.tried_on.getMonth() + 1).padStart(2, '0')}-${String(row.tried_on.getDate()).padStart(2, '0')}`
+        : String(row.tried_on || '').slice(0, 10);
+
+      const prev = byContact.get(row.contact_id) || { id: row.contact_id, name: row.name, count: 0, last: '', crm };
+      prev.count += hits.length;                          // a note can hold more than one line
+      if (triedOn > prev.last) prev.last = triedOn;       // yyyy-mm-dd sorts correctly as text
+      byContact.set(row.contact_id, prev);
+    }
+
+    const found = Array.from(byContact.values());
+    const oldest = found.reduce((a, c) => (!a || (c.last && c.last < a) ? c.last : a), '');
+
+    if (!commit) {
+      return res.json({
+        ok: true,
+        committed: false,
+        found: found.length,
+        oldest: oldest || null,
+        companies: found.slice(0, 20).map((c) => ({ name: c.name, count: c.count, last: c.last })),
+      });
+    }
+
+    // Every one of these is already older than the 3-working-day wait, so the
+    // call-back is set to the day it was last tried — they all read as ready
+    // now, which is the point: they are overdue a redial.
+    let written = 0;
+    for (const c of found) {
+      const patch = { noAnswerCount: c.count, noAnswerLast: c.last || null, noAnswerDue: c.last || null };
+      try {
+        await query(
+          `UPDATE contacts
+              SET crm = COALESCE(crm, '{}'::jsonb) || $1::jsonb
+            WHERE id = $2 AND organisation_id = $3`,
+          [JSON.stringify(patch), c.id, organizationId]
+        );
+        written += 1;
+      } catch (e) {
+        console.error(`no-answer-backfill: could not update ${c.id}:`, e);
+      }
+    }
+
+    res.json({ ok: true, committed: true, found: found.length, written, oldest: oldest || null });
+  } catch (error) {
+    console.error('no-answer-backfill failed:', error);
+    res.status(500).json({ ok: false, error: 'Back-fill failed' });
   }
 });
 

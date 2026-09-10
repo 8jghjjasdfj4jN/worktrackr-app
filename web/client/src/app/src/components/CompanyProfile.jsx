@@ -19,6 +19,7 @@ import DatePicker from './DatePicker.jsx';
 import { TimePicker } from './DateTimePicker.jsx';
 import { logCall } from './callLog.js';
 import { confirmDial } from './dialConfirm.js';
+import { noAnswerPatch, CLEAR_CALL_BACK, attemptLabel, dueLabel, isAwaitingCallBack } from './noAnswer.js';
 import ServiceEmailPanel from './ServiceEmailPanel.jsx';
 
 // Stage values are unchanged in the DB; only the FIRST label is shown as
@@ -397,7 +398,20 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
     } catch (e) { setCompany(prev); setError(e.message || 'Could not save'); }
     finally { setSaving(false); }
   };
-  const setStage = (stage) => saveCrm({ salesStage: stage || null }); // '' → null = No stage
+  // Setting a stage means you got through to somebody, so it also takes the
+  // company off the No answer call-back list. The attempt COUNT is kept — that
+  // history is worth having, and only the due date decides list membership.
+  const setStage = (stage) => saveCrm({ salesStage: stage || null, ...CLEAR_CALL_BACK }); // '' → null = No stage
+
+  // "No answer" — saves IMMEDIATELY (owner's decision: it's pressed between
+  // calls, so waiting for Save note lost the record whenever the page was left).
+  // One press does three things: counts the attempt, sets the call-back for 3
+  // working days' time, and still types the line into the note box so a real
+  // note can be added on top and saved as normal.
+  const markNoAnswer = async () => {
+    fillQuickNote('No answer');
+    await saveCrm(noAnswerPatch(company));
+  };
   const setSource = (source) => saveCrm({ source });
   const setSpotter = (spotterUserId) => saveCrm({ spotterUserId: spotterUserId || null });
 
@@ -933,7 +947,7 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
               style={{ background: 'transparent', color: T.accent, border: `1px solid ${T.accent}88`, borderRadius: 8, padding: '7px 12px', fontSize: 13, cursor: 'pointer' }}>
               <CalendarPlus size={14} style={{ verticalAlign: -2, marginRight: 4 }} />Add calendar reminder
             </button>
-            <button onClick={() => fillQuickNote('No answer')} title="Fill the note box with “No answer” and today’s date"
+            <button onClick={markNoAnswer} title="Log a no answer now and set a call-back for 3 working days’ time"
               style={{ background: 'transparent', color: T.sub, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 12px', fontSize: 13, cursor: 'pointer' }}>
               <PhoneOff size={14} style={{ verticalAlign: -2, marginRight: 4 }} />No answer
             </button>
@@ -954,6 +968,15 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
               </>
             )}
           </div>
+          {/* Confirms the No answer press landed, and says when to try again.
+              Reads from the saved record, so it is proof the save worked
+              rather than a message about what was attempted. */}
+          {isAwaitingCallBack(company) && (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: T.sub }}>
+              <PhoneOff size={13} style={{ verticalAlign: -2, marginRight: 5, color: T.accent }} />
+              {attemptLabel(company)} · call back {dueLabel(company)}
+            </div>
+          )}
           {noteHint && (
             <div style={{ marginTop: 6, fontSize: 12.5, color: T.accent }}>{noteHint}</div>
           )}
