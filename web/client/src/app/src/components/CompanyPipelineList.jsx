@@ -1097,13 +1097,13 @@ export default function CompanyPipelineList({ onOpenCompany, onAddCompany, isMan
         <span className="text-[#fca5a5]">{backfill.error}</span>
       ) : backfill.committed ? (
         <span className="text-[#6ee7b7]">
-          Added {backfill.written} {backfill.written === 1 ? 'company' : 'companies'} to the No answer list. They all show as ready to call now.
+          Added {backfill.written} {backfill.written === 1 ? 'company' : 'companies'} to the No answer list, each due 3 working days after you last tried them.
         </span>
       ) : backfill.found > 0 ? (
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-[#cbd5e1]">
             Found {backfill.found} {backfill.found === 1 ? 'company' : 'companies'} you logged a no answer for in the last 7 days
-            {backfill.oldest ? `, going back to ${backfill.oldest}` : ''}.
+            {backfill.oldest ? `, going back to ${backfill.oldest}` : ''}. Each gets a call-back 3 working days after you last tried them.
           </span>
           <button
             onClick={() => runBackfill(true)}

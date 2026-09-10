@@ -405,13 +405,40 @@ router.get('/no-answer-backfill', async (req, res) => {
     // not a hyphen, and the date is dd/mm/yyyy.
     const LINE = /No answer\s+—\s+(\d{2})\/(\d{2})\/(\d{4})/g;
 
+    // 3 working days, Mon–Fri, from a yyyy-mm-dd date.
+    //
+    // ⚠️ This is a SECOND COPY of the rule in
+    // client/src/app/src/components/noAnswer.js — the frontend file is an ES
+    // module and this route is CommonJS, so it cannot be imported. If the
+    // waiting period ever changes it MUST be changed in both, or the button and
+    // the back-fill will quietly disagree about when a call-back is due.
+    const WORKING_DAYS_AHEAD = 3;
+    const addWorkingDays = (key, n) => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ''));
+      if (!m) return null;
+      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      let left = n;
+      while (left > 0) {
+        d.setDate(d.getDate() + 1);
+        const dow = d.getDay(); // 0 Sun … 6 Sat
+        if (dow !== 0 && dow !== 6) left -= 1;
+      }
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    };
+
     const byContact = new Map();
     for (const row of rows) {
       const crm = row.crm || {};
-      // Skip anyone already on the list, anyone archived, and anyone who has
-      // been given a stage — a stage means somebody got through, so dragging
-      // them back onto the call-back list would be wrong.
-      if (crm.noAnswerDue) continue;
+      // Skip anyone archived, and anyone who has been given a stage — a stage
+      // means somebody got through, so dragging them back onto the call-back
+      // list would be wrong.
+      //
+      // Anyone already on the list is skipped too, EXCEPT where the due date is
+      // not actually later than the day they were last tried. That is the
+      // signature of the first version of this back-fill, which wrongly marked
+      // everything ready immediately. Those get recomputed; a real button press
+      // always sits 3 working days ahead and is left alone.
+      if (crm.noAnswerDue && !(crm.noAnswerLast && crm.noAnswerDue <= crm.noAnswerLast)) continue;
       if (String(crm.archived) === 'true' || crm.archived === true) continue;
       if (crm.salesStage) continue;
 
@@ -437,16 +464,22 @@ router.get('/no-answer-backfill', async (req, res) => {
         committed: false,
         found: found.length,
         oldest: oldest || null,
-        companies: found.slice(0, 20).map((c) => ({ name: c.name, count: c.count, last: c.last })),
+        companies: found.slice(0, 20).map((c) => ({
+          name: c.name,
+          count: c.count,
+          last: c.last,
+          due: c.last ? addWorkingDays(c.last, WORKING_DAYS_AHEAD) : null,
+        })),
       });
     }
 
-    // Every one of these is already older than the 3-working-day wait, so the
-    // call-back is set to the day it was last tried — they all read as ready
-    // now, which is the point: they are overdue a redial.
+    // Same rule as the button: 3 working days AFTER the day they were last
+    // tried. One logged today therefore comes back round in 3 working days, not
+    // immediately — ringing someone the same afternoon is wasted time.
     let written = 0;
     for (const c of found) {
-      const patch = { noAnswerCount: c.count, noAnswerLast: c.last || null, noAnswerDue: c.last || null };
+      const due = c.last ? addWorkingDays(c.last, WORKING_DAYS_AHEAD) : null;
+      const patch = { noAnswerCount: c.count, noAnswerLast: c.last || null, noAnswerDue: due };
       try {
         await query(
           `UPDATE contacts
