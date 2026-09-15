@@ -347,11 +347,46 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
 
   // Sort a day's blended events earliest-first by their start time. Entries
   // with no time (all-day) fall back to their date, so they sort to the top.
+  //
+  // ⚠️ Time alone is NOT enough, and that was the bug: a calling list is
+  // typically EVERY entry at 09:00, and GET /api/crm-events orders by
+  // start_at with no tie-break, so Postgres may hand back same-time rows in a
+  // different order on each request. Array.sort is stable, so the view simply
+  // inherited whatever order arrived — hence a different layout every reload.
+  // The company → title → id chain below makes the order fully deterministic,
+  // so the same day always renders identically. No backend change needed.
+  const startMs = (ev) => {
+    const t = new Date(ev.start_at || ev.startAt || ev.date || 0).getTime();
+    return isNaN(t) ? 0 : t;
+  };
   const sortByTime = (arr) => [...arr].sort((a, b) => {
-    const ta = new Date(a.start_at || a.startAt || a.date || 0).getTime();
-    const tb = new Date(b.start_at || b.startAt || b.date || 0).getTime();
-    return (isNaN(ta) ? 0 : ta) - (isNaN(tb) ? 0 : tb);
+    const d = startMs(a) - startMs(b);
+    if (d !== 0) return d;
+    const ca = String(a.company || '').toLowerCase();
+    const cb = String(b.company || '').toLowerCase();
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    const ta = String(a.title || '').toLowerCase();
+    const tb = String(b.title || '').toLowerCase();
+    if (ta !== tb) return ta < tb ? -1 : 1;
+    return String(a.id).localeCompare(String(b.id));
   });
+
+  // "Done" means exactly what puts the green tick on the card, so the tick and
+  // the position can never disagree. Job/ticket statuses (completed,
+  // in_progress…) are deliberately NOT treated as done here — they don't show
+  // a tick either.
+  const isDoneEntry = (ev) => ev?.status === 'done';
+
+  // Move already-done entries to the bottom of the day list, each group
+  // keeping its normal time order.
+  // ⚠️ Applied to the selected-day panel ONLY. The month/week/day grids bucket
+  // entries by shared time so same-time items render side-by-side; sinking a
+  // done 09:00 entry there would land it back in the earlier 09:00 bucket and
+  // look scrambled. Those grids stay strictly time-ordered (now stable).
+  const sinkDone = (arr) => [
+    ...arr.filter((e) => !isDoneEntry(e)),
+    ...arr.filter(isDoneEntry),
+  ];
 
   // FIX 7: check start_at (snake_case — what backend returns)
   const getEventsForDate = (date) => {
@@ -717,6 +752,8 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
 
   const calendarDays = generateCalendarDays();
   const todayEvents = getEventsForDate(selectedDate);
+  // The selected-day panel on the right: same entries, done ones at the bottom.
+  const panelEvents = sinkDone(todayEvents);
 
   const inputClass = "w-full px-3 py-2 text-[13px] border border-[#2e2e4a] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#f59e0b]/30 focus:border-[#f59e0b]";
   const labelClass = "block text-[11px] font-semibold text-[#6b7280] uppercase tracking-wider mb-1.5";
@@ -1003,14 +1040,23 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
                 <p className="text-[13px] text-[#6b7280] text-center py-4">No events scheduled</p>
               ) : (
                 <div className="space-y-2">
-                  {todayEvents.map(event => {
+                  {panelEvents.map((event, i) => {
                     const tc = getEventStyle(event);
                     const IconComponent = tc.icon;
                     const ts = event.start_at || event.startAt;
                     const te = event.end_at || event.endAt;
+                    // A quiet "Done" divider on the first done entry, so the
+                    // block at the bottom is obviously finished work and not
+                    // just an odd sort order.
+                    const startsDone = isDoneEntry(event) && !isDoneEntry(panelEvents[i - 1]);
                     return (
+                      <React.Fragment key={event.id}>
+                      {startsDone && (
+                        <div className="pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[#6b7280]">
+                          Done
+                        </div>
+                      )}
                       <div
-                        key={event.id}
                         onClick={() => openEvent(event)}
                         style={{ borderLeft: `4px solid ${tc.accent}` }}
                         className="border border-[#2e2e4a] rounded-lg p-3 hover:bg-[rgba(245,158,11,0.16)] cursor-pointer transition-colors"
@@ -1031,13 +1077,14 @@ export default function CRMCalendar({ timezone = 'Europe/London', onTicketClick,
                             <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium ${tc.color}`}>
                               {tc.label}
                             </span>
-                            {event.status === 'done'
+                            {isDoneEntry(event)
                               ? <CheckCircle className="w-3.5 h-3.5 text-[#6ee7b7]" />
                               : <Clock className="w-3.5 h-3.5 text-[#f59e0b]" />
                             }
                           </div>
                         </div>
                       </div>
+                      </React.Fragment>
                     );
                   })}
                 </div>
