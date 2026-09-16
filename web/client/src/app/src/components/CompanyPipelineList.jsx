@@ -480,18 +480,58 @@ function CallCounter({ refreshKey }) {
   // isn't shown.
   if (failed || !data) return null;
 
+  // Your own record, from the call log. `best` deliberately excludes today, so
+  // the target holds still while you chase it. A missing best (older server,
+  // or no history yet) simply hides this half of the strip rather than showing
+  // a made-up figure.
+  const best = Number(data.best || 0);
+  const youToday = Number(data.youToday || 0);
+  const beaten = best > 0 && youToday > best;
+  const toGo = Math.max(0, best - youToday);
+  const pct = best > 0 ? Math.min(100, Math.round((youToday / best) * 100)) : 0;
+  const bestWhen = data.bestDate
+    ? `${data.bestDate.slice(8, 10)}/${data.bestDate.slice(5, 7)}/${data.bestDate.slice(0, 4)}`
+    : null;
+
   return (
-    <div className="w-full mb-1 rounded-xl border border-[#2e2e4a] bg-[#242438] px-4 py-3 flex items-center gap-7 flex-wrap">
-      <div className="flex items-center gap-2">
-        <PhoneCall className="w-4 h-4 text-[#f59e0b]" />
-        <span className="text-[12px] uppercase tracking-wide text-[#94a3b8]">Team calls</span>
+    <div className="w-full mb-1 rounded-xl border border-[#2e2e4a] bg-[#242438] px-4 py-3">
+      <div className="flex items-center gap-7 flex-wrap">
+        <div className="flex items-center gap-2">
+          <PhoneCall className="w-4 h-4 text-[#f59e0b]" />
+          <span className="text-[12px] uppercase tracking-wide text-[#94a3b8]">Team calls</span>
+        </div>
+        <CallStat label="Today" value={data.today} big />
+        <CallStat label="Yesterday" value={data.yesterday} />
+        <CallStat label="Last 7 days" value={data.last7} />
+        <CallStat label="You today" value={youToday} />
+        <CallStat label="Your best day" value={best > 0 ? best : '—'} />
+        <span className="text-[11px] text-[#6b7280] ml-auto">
+          Counted from numbers dialled across the team · UK time
+        </span>
       </div>
-      <CallStat label="Today" value={data.today} big />
-      <CallStat label="Yesterday" value={data.yesterday} />
-      <CallStat label="Last 7 days" value={data.last7} />
-      <span className="text-[11px] text-[#6b7280] ml-auto">
-        Counted from numbers dialled across the team · UK time
-      </span>
+
+      <div className="mt-3 pt-3 border-t border-[#2e2e4a]">
+        <div className="h-1.5 w-full rounded-full bg-[#1f1f33] overflow-hidden">
+          <div
+            className={`h-full ${beaten ? 'bg-[#6ee7b7]' : 'bg-[#f59e0b]'}`}
+            style={{ width: `${beaten ? 100 : pct}%` }}
+          />
+        </div>
+        <div className="mt-2 text-[12px]">
+          {best === 0 ? (
+            <span className="text-[#6b7280]">No record yet — today's calls set your first personal best.</span>
+          ) : beaten ? (
+            <span className="text-[#6ee7b7]">
+              New personal best — {youToday} calls, past your {best} on {bestWhen}.
+            </span>
+          ) : (
+            <span className="text-[#94a3b8]">
+              {toGo === 0 ? 'Level with' : `${toGo} more to beat`} your best of {best}
+              {bestWhen ? ` on ${bestWhen}` : ''}.
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

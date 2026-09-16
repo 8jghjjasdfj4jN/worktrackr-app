@@ -335,16 +335,68 @@ router.get('/call-count', async (req, res) => {
     );
 
     const row = result.rows[0] || {};
+
+    // ── Your own numbers (personal best) ──────────────────────────────────
+    // Deliberately a SECOND, separate query with its own try/catch. The team
+    // numbers above are what the Sales page has relied on for months; if this
+    // one ever misbehaves it must not be able to take them (or the Companies
+    // list) down with it — a missing personal best is a cosmetic loss.
+    //
+    // ⚠️ The record EXCLUDES today on purpose, so the target you are chasing
+    // stays still while you chase it. Beat it and today becomes the new record
+    // tomorrow. Without that the number would climb with every call made and
+    // could never be beaten.
+    //
+    // ⚠️ Same London-day rule as above, and the date is turned into text in
+    // SQL. Handing back a raw date and formatting it in JavaScript is what
+    // shifts a day under British Summer Time.
+    let mine = { youToday: 0, best: 0, bestDate: null };
+    try {
+      const mineResult = await query(
+        `WITH mine AS (
+           SELECT (called_at AT TIME ZONE 'Europe/London')::date AS day_london,
+                  COUNT(*)::int AS n
+             FROM contact_calls
+            WHERE organisation_id = $1
+              AND user_id = $2
+            GROUP BY 1
+         )
+         SELECT
+           COALESCE((SELECT n FROM mine
+                      WHERE day_london = (NOW() AT TIME ZONE 'Europe/London')::date), 0) AS you_today,
+           COALESCE((SELECT n FROM mine
+                      WHERE day_london < (NOW() AT TIME ZONE 'Europe/London')::date
+                      ORDER BY n DESC, day_london DESC
+                      LIMIT 1), 0) AS best,
+           (SELECT to_char(day_london, 'YYYY-MM-DD') FROM mine
+             WHERE day_london < (NOW() AT TIME ZONE 'Europe/London')::date
+             ORDER BY n DESC, day_london DESC
+             LIMIT 1) AS best_date`,
+        [organizationId, req.user.userId]
+      );
+      const m = mineResult.rows[0] || {};
+      mine = {
+        youToday: Number(m.you_today || 0),
+        best: Number(m.best || 0),
+        bestDate: m.best_date || null,
+      };
+    } catch (mineError) {
+      console.error('Error fetching personal call best:', mineError);
+    }
+
     res.json({
       today: Number(row.today || 0),
       yesterday: Number(row.yesterday || 0),
       last7: Number(row.last7 || 0),
+      youToday: mine.youToday,
+      best: mine.best,
+      bestDate: mine.bestDate,
     });
   } catch (error) {
     // The table may not exist yet on an instance that hasn't run phase13.
     // Report zeroes rather than breaking the Sales page over a counter.
     console.error('Error fetching call count:', error);
-    res.json({ today: 0, yesterday: 0, last7: 0, unavailable: true });
+    res.json({ today: 0, yesterday: 0, last7: 0, youToday: 0, best: 0, bestDate: null, unavailable: true });
   }
 });
 
