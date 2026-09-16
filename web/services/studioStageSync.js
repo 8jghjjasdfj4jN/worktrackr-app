@@ -61,13 +61,94 @@ async function integratedOrgIds() {
   return r.rows.map((x) => String(x.organisation_id));
 }
 
+/**
+ * Normalise one company's service interests.
+ *
+ * Sent as stored rather than checked against a list of valid keys here. The
+ * vocabulary already lives in routes/contacts.js and Studio drops keys it does
+ * not recognise (logging them, never rejecting the push), so a third copy of
+ * the list in this file would be a thing to forget to update rather than a
+ * safeguard. Requiring the route's copy is worse still: contacts.js requires
+ * this file, so the two would import each other and one would load half-built.
+ */
+function cleanInterests(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const k of raw) {
+    const key = String(k || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+/**
+ * Every email address WorkTrackr holds for a company: its own, plus each
+ * person on the People panel. Studio keys on the address, so duplicates are
+ * removed case-insensitively — one person listed twice must not become two
+ * audience rows.
+ */
+function emailsFor(r) {
+  const out = [];
+  const seen = new Set();
+  const add = (value) => {
+    const email = String(value || '').trim();
+    if (!email) return;
+    const key = email.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(email);
+  };
+  add(r.email);
+  const people = Array.isArray(r.contact_persons) ? r.contact_persons : [];
+  for (const p of people) add(p && p.email);
+  return out;
+}
+
+/**
+ * ⚠️ INTERESTS ARE HELD PER COMPANY, NOT PER PERSON.
+ *
+ * WorkTrackr's "Interested in" panel writes to contacts.interests, which is a
+ * column on the COMPANY row. A person on the People panel has a name, role,
+ * email, phone and decision-maker flag — and no interests of their own. So
+ * every address at a company is sent the same set: the company's.
+ *
+ * Studio's shape is still honoured, because Studio keys on the address and
+ * needs one entry per person. But two people at the same company cannot yet
+ * differ, and nothing here can invent ticks that were never recorded. Giving
+ * them separate interests means adding that to the People panel first.
+ *
+ * ⚠️ THE contacts KEY IS OMITTED WHEN WE HOLD NO ADDRESSES.
+ *
+ * Studio leaves its stored interests untouched when the key is absent, and
+ * clears a person's interests when sent an empty list. A company with nobody
+ * on its People panel and no company address tells us nothing about anybody,
+ * so it must stay silent rather than clear real data every half hour.
+ *
+ * An empty interests ARRAY, though, is sent deliberately and is correct. The
+ * column is NOT NULL with a default of no interests, so WorkTrackr always has
+ * an answer — "nothing ticked" is a real answer, and it is what puts somebody
+ * in Studio's general IT support group. The one consequence worth knowing: if
+ * interests are ever set inside Studio for somebody WorkTrackr holds, the
+ * reconciliation will overwrite them within half an hour. WorkTrackr owns
+ * this field.
+ */
 function mapRow(r) {
-  return {
+  const out = {
     id: String(r.id),
     name: r.name || null,
     primaryContact: r.primary_contact || null,
     stage: r.sales_stage || null,
   };
+
+  const emails = emailsFor(r);
+  if (emails.length > 0) {
+    const interests = cleanInterests(r.interests);
+    out.contacts = emails.map((email) => ({ email, interests }));
+  }
+  return out;
 }
 
 /**
@@ -91,7 +172,8 @@ async function pushAllStages(reason = 'reconcile') {
     }
 
     const r = await query(
-      `SELECT id, name, primary_contact, crm->>'salesStage' AS sales_stage
+      `SELECT id, name, primary_contact, email, interests, contact_persons,
+              crm->>'salesStage' AS sales_stage
          FROM contacts
         WHERE organisation_id = ANY($1::uuid[])`,
       [orgIds]
@@ -133,7 +215,8 @@ async function pushAllStages(reason = 'reconcile') {
 async function pushOneStage(contactId, reason = 'stage change') {
   try {
     const r = await query(
-      `SELECT id, name, primary_contact, crm->>'salesStage' AS sales_stage
+      `SELECT id, name, primary_contact, email, interests, contact_persons,
+              crm->>'salesStage' AS sales_stage
          FROM contacts
         WHERE id = $1`,
       [contactId]
