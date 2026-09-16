@@ -70,6 +70,9 @@ async function integratedOrgIds() {
  * the list in this file would be a thing to forget to update rather than a
  * safeguard. Requiring the route's copy is worse still: contacts.js requires
  * this file, so the two would import each other and one would load half-built.
+ *
+ * Lowercased, trimmed and de-duplicated because Studio expects lowercase keys
+ * and sorts them itself, so order is not our problem.
  */
 function cleanInterests(raw) {
   if (!Array.isArray(raw)) return [];
@@ -85,70 +88,41 @@ function cleanInterests(raw) {
 }
 
 /**
- * Every email address WorkTrackr holds for a company: its own, plus each
- * person on the People panel. Studio keys on the address, so duplicates are
- * removed case-insensitively — one person listed twice must not become two
- * audience rows.
- */
-function emailsFor(r) {
-  const out = [];
-  const seen = new Set();
-  const add = (value) => {
-    const email = String(value || '').trim();
-    if (!email) return;
-    const key = email.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(email);
-  };
-  add(r.email);
-  const people = Array.isArray(r.contact_persons) ? r.contact_persons : [];
-  for (const p of people) add(p && p.email);
-  return out;
-}
-
-/**
- * ⚠️ INTERESTS ARE HELD PER COMPANY, NOT PER PERSON.
+ * ⚠️ INTERESTS ARE COMPANY-LEVEL, AND ARE SENT AS SUCH.
  *
- * WorkTrackr's "Interested in" panel writes to contacts.interests, which is a
- * column on the COMPANY row. A person on the People panel has a name, role,
- * email, phone and decision-maker flag — and no interests of their own. So
- * every address at a company is sent the same set: the company's.
+ * The "Interested in" panel writes to contacts.interests, a column on the
+ * company row. People listed under a company have a name, role, email, phone
+ * and decision-maker flag — and no interests of their own. So the per-person
+ * `contacts` form that Studio also accepts is deliberately NOT sent: there is
+ * no per-person data to put in it, and filling it with the company's tags
+ * would be inventing a distinction that was never recorded.
  *
- * Studio's shape is still honoured, because Studio keys on the address and
- * needs one entry per person. But two people at the same company cannot yet
- * differ, and nothing here can invent ticks that were never recorded. Giving
- * them separate interests means adding that to the People panel first.
+ * ⚠️ THE interests KEY IS ALWAYS SENT, INCLUDING WHEN EMPTY. This departs from
+ * Studio's advice to omit the key rather than send an empty array, and the
+ * reason matters.
  *
- * ⚠️ THE contacts KEY IS OMITTED WHEN WE HOLD NO ADDRESSES.
+ * Studio's warning guards against an empty array meaning "don't know".
+ * WorkTrackr never means that: the column is NOT NULL with a default of no
+ * interests, so there is no difference between never ticked and ticked then
+ * cleared. Both mean nothing is ticked, which is a real answer.
  *
- * Studio leaves its stored interests untouched when the key is absent, and
- * clears a person's interests when sent an empty list. A company with nobody
- * on its People panel and no company address tells us nothing about anybody,
- * so it must stay silent rather than clear real data every half hour.
+ * Omitting the key when empty would make UN-TICKING IMPOSSIBLE. Untick Website
+ * on a company and WorkTrackr would simply fall silent, so Studio would keep
+ * that tag for ever and go on emailing them about websites. A control that
+ * appears to work and changes nothing is worse than no control.
  *
- * An empty interests ARRAY, though, is sent deliberately and is correct. The
- * column is NOT NULL with a default of no interests, so WorkTrackr always has
- * an answer — "nothing ticked" is a real answer, and it is what puts somebody
- * in Studio's general IT support group. The one consequence worth knowing: if
- * interests are ever set inside Studio for somebody WorkTrackr holds, the
- * reconciliation will overwrite them within half an hour. WorkTrackr owns
- * this field.
+ * The one consequence: if tags are ever set inside Studio for a company
+ * WorkTrackr holds, the reconciliation overwrites them within half an hour.
+ * WorkTrackr owns this field.
  */
 function mapRow(r) {
-  const out = {
+  return {
     id: String(r.id),
     name: r.name || null,
     primaryContact: r.primary_contact || null,
     stage: r.sales_stage || null,
+    interests: cleanInterests(r.interests),
   };
-
-  const emails = emailsFor(r);
-  if (emails.length > 0) {
-    const interests = cleanInterests(r.interests);
-    out.contacts = emails.map((email) => ({ email, interests }));
-  }
-  return out;
 }
 
 /**
@@ -172,7 +146,7 @@ async function pushAllStages(reason = 'reconcile') {
     }
 
     const r = await query(
-      `SELECT id, name, primary_contact, email, interests, contact_persons,
+      `SELECT id, name, primary_contact, interests,
               crm->>'salesStage' AS sales_stage
          FROM contacts
         WHERE organisation_id = ANY($1::uuid[])`,
@@ -215,7 +189,7 @@ async function pushAllStages(reason = 'reconcile') {
 async function pushOneStage(contactId, reason = 'stage change') {
   try {
     const r = await query(
-      `SELECT id, name, primary_contact, email, interests, contact_persons,
+      `SELECT id, name, primary_contact, interests,
               crm->>'salesStage' AS sales_stage
          FROM contacts
         WHERE id = $1`,
