@@ -31,6 +31,30 @@ const SERVICE_INTERESTS = [
 ];
 const INTEREST_KEYS = SERVICE_INTERESTS.map((s) => s.key);
 
+/**
+ * One comparable string for a company's interests, so "did this save change
+ * the tags?" can be answered without caring about order or duplicates.
+ *
+ * Order is deliberately thrown away. The PUT route stores tags in
+ * SERVICE_INTERESTS order, but rows written before that (or by hand) may hold
+ * them in any order, and re-saving the same set of tags in a different order
+ * is NOT a change — pushing on it would mean telling Studio the same thing
+ * twice for nothing.
+ *
+ * Unknown keys are kept rather than filtered. If a row somehow holds a tag
+ * that is no longer in the vocabulary, replacing it with a valid set IS a real
+ * change and should reach Studio.
+ */
+function canonicalInterests(raw) {
+  if (!Array.isArray(raw)) return '';
+  const seen = new Set();
+  for (const k of raw) {
+    const key = String(k || '').trim().toLowerCase();
+    if (key) seen.add(key);
+  }
+  return Array.from(seen).sort().join('|');
+}
+
 const contactSchema = z.object({
   type: z.enum(['company', 'individual']).default('company'),
   name: z.string().min(1, 'Name is required'),
@@ -880,11 +904,14 @@ router.put('/:id', async (req, res) => {
     const { id } = req.params;
 
     // Verify contact exists and belongs to organization.
-    // `crm` is selected too so the sales stage BEFORE this save is known — it
-    // is the only way to tell whether this request actually changes the stage
-    // (the whole crm object is replaced on save, not merged).
+    // `crm` and `interests` are selected too so the sales stage and the service
+    // interests BEFORE this save are known — that is the only way to tell
+    // whether this request actually changes either of them (the whole crm
+    // object and the whole interests array are replaced on save, not merged).
+    // Both are pushed to Sweetbyte Studio when they move; see the end of this
+    // handler.
     const checkResult = await query(
-      `SELECT id, crm FROM contacts WHERE id = $1 AND organisation_id = $2`,
+      `SELECT id, crm, interests FROM contacts WHERE id = $1 AND organisation_id = $2`,
       [id, organizationId]
     );
 
@@ -984,56 +1011,98 @@ router.put('/:id', async (req, res) => {
       updateValues
     );
 
+    // WHAT THIS SAVE ACTUALLY CHANGED.
+    //
+    // Both comparisons are against the row as it stood BEFORE the update, read
+    // in the pre-check at the top of this handler. They are pure comparisons
+    // with no database work, so they cannot fail, and they are done before the
+    // bookkeeping below so that a bookkeeping failure cannot lose them.
+    //
+    // A key absent from the request means "not touched" (absent keys were
+    // stripped above), so it can never count as a change. That is what keeps an
+    // ordinary save — a phone number, a note — from pushing anything.
+    const before = checkResult.rows[0] || {};
+    const beforeCrm = before.crm || {};
+
+    let stageChanged = false;
+    let prevStage = null;
+    let nextStage = null;
+    if (validatedData.crm !== undefined) {
+      prevStage = beforeCrm.salesStage || null;
+      nextStage = (validatedData.crm && validatedData.crm.salesStage) || null;
+      // NULL on either side is a real value meaning "No stage", not a missing
+      // one, so clearing a stage and setting a first stage both count.
+      stageChanged = prevStage !== nextStage;
+    }
+
+    // Compared against what was actually STORED (the UPDATE's RETURNING row)
+    // rather than against the request body, so this reflects the tags as they
+    // now are — including the de-duplication and re-ordering applied above.
+    let interestsChanged = false;
+    if (validatedData.interests !== undefined) {
+      interestsChanged =
+        canonicalInterests(before.interests) !== canonicalInterests(result.rows[0].interests);
+    }
+
     // Record a stage change so calls can be counted (phase13_stage_changes).
     // Only written when the stage GENUINELY differs from what was stored —
     // saving a phone number or a note must not look like a call.
-    // NULL on either side is a real value meaning "No stage", not a missing
-    // one, so clearing a stage and setting a first stage both count.
     // Wrapped in its own try/catch on purpose: this is bookkeeping, and a
     // failure here must never lose the user's actual save. Worst case the
     // counter is one short and the reason is in the logs.
     try {
-      if (validatedData.crm !== undefined) {
-        const before = checkResult.rows[0].crm || {};
-        const prevStage = before.salesStage || null;
-        const nextStage = (validatedData.crm && validatedData.crm.salesStage) || null;
-        if (prevStage !== nextStage) {
-          await query(
-            `INSERT INTO contact_stage_changes
-               (organisation_id, contact_id, user_id, from_stage, to_stage)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [organizationId, id, req.user.userId, prevStage, nextStage]
-          );
+      if (stageChanged) {
+        await query(
+          `INSERT INTO contact_stage_changes
+             (organisation_id, contact_id, user_id, from_stage, to_stage)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [organizationId, id, req.user.userId, prevStage, nextStage]
+        );
 
-          // Moving to dead or customer kills any pending service-email
-          // follow-up. Opposite reasons, same conclusion: a dead company
-          // shouldn't be chased, and a customer shouldn't get a cold-call
-          // follow-up about services they've just bought.
-          //
-          // Deliberately not awaited. Studio is a separate service and a slow
-          // or unreachable one must not hold up the user's save; the bridge
-          // swallows its own errors and logs them.
-          if (nextStage === 'dead' || nextStage === 'customer') {
-            cancelFollowupsForContact(id, `moved to ${nextStage} stage`);
-          }
-
-          // Tell Studio the stage moved, whichever way it moved.
-          //
-          // Broader than the cancel above on purpose. That one only cares
-          // about leaving the pipeline; Studio's keep-warm audience is defined
-          // by WHICH stages are in it, so contacted → prospect ADDS somebody to
-          // the loop exactly as prospect → dead removes them. Only pushing the
-          // exits would leave Studio permanently behind on the entries.
-          //
-          // Deliberately not awaited, same as the cancel: Studio is a separate
-          // service and a slow one must not hold up the user's save. The push
-          // swallows its own errors, and the half-hourly reconcile picks up
-          // anything that did not land.
-          pushOneStage(id, `stage ${prevStage || 'none'} to ${nextStage || 'none'}`);
+        // Moving to dead or customer kills any pending service-email
+        // follow-up. Opposite reasons, same conclusion: a dead company
+        // shouldn't be chased, and a customer shouldn't get a cold-call
+        // follow-up about services they've just bought.
+        //
+        // Deliberately not awaited. Studio is a separate service and a slow
+        // or unreachable one must not hold up the user's save; the bridge
+        // swallows its own errors and logs them.
+        if (nextStage === 'dead' || nextStage === 'customer') {
+          cancelFollowupsForContact(id, `moved to ${nextStage} stage`);
         }
       }
     } catch (logErr) {
       console.error('Could not record stage change (contact still saved):', logErr);
+    }
+
+    // TELL STUDIO — ONCE — IF ANYTHING IT ACTS ON MOVED.
+    //
+    // Studio needs both fields: the stage decides whether a company is in the
+    // keep-warm audience at all, and the interests decide which emails it gets.
+    // So a ticked or unticked tag has to travel as promptly as a stage change;
+    // an untick that took half an hour to land meant half an hour more of the
+    // wrong emails, and looked to whoever ticked it like the control did
+    // nothing.
+    //
+    // Both changes push, but only ONE push per save. pushOneStage re-reads the
+    // whole row and sends the stage and the interests together, so a save that
+    // moves both is already fully described by a single call — firing twice
+    // would send Studio the same row twice.
+    //
+    // Pushed on EVERY stage change, not only dead and customer: the keep-warm
+    // audience is defined by WHICH stages are in it, so contacted → prospect
+    // ADDS somebody to the loop exactly as prospect → dead removes them.
+    //
+    // Deliberately NOT awaited, and outside the try/catch above so a failed
+    // counter insert cannot swallow it. Studio is a separate service and a slow
+    // or unreachable one must not hold up the user's save; the push swallows
+    // its own errors, and the half-hourly reconcile picks up anything that did
+    // not land.
+    if (stageChanged || interestsChanged) {
+      const reasons = [];
+      if (stageChanged) reasons.push(`stage ${prevStage || 'none'} to ${nextStage || 'none'}`);
+      if (interestsChanged) reasons.push('interests changed');
+      pushOneStage(id, reasons.join(' and '));
     }
 
     res.json(mapContact(result.rows[0]));
