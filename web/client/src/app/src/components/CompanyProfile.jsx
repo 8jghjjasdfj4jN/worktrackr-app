@@ -412,6 +412,28 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
     fillQuickNote('No answer');
     await saveCrm(noAnswerPatch(company));
   };
+  // "Voicemail left" — logs the line and, ONLY when the company has no stage
+  // yet, moves it to Voicemail so it lands in that column on the Companies list.
+  //
+  // ⚠️ A COMPANY THAT ALREADY HAS A STAGE KEEPS IT. Leaving a voicemail for a
+  // Hot prospect is not a reason to knock them back down the pipeline, and the
+  // stage is the owner's to change by hand in the dropdown. So the stage is set
+  // only from "No stage"; everything else just gets the note line.
+  //
+  // The call-back list is deliberately left alone, unlike setStage, which
+  // clears it. Setting a stage by hand means you got through to somebody; a
+  // voicemail means you did not, so a call-back already booked by the No answer
+  // button should survive. (A company still waiting on a call-back shows under
+  // "No answer" on the Companies list until that date passes, whatever stage it
+  // holds — that grouping is unchanged by this button.)
+  //
+  // The note line is typed either way, and like the other quick buttons it is
+  // stamped at click time, so a page left open overnight still writes today.
+  const markVoicemailLeft = async () => {
+    fillQuickNote('Voicemail left');
+    if (!company?.crm?.salesStage) await saveCrm({ salesStage: 'voicemail' });
+  };
+
   const setSource = (source) => saveCrm({ source });
   const setSpotter = (spotterUserId) => saveCrm({ spotterUserId: spotterUserId || null });
 
@@ -950,6 +972,10 @@ export default function CompanyProfile({ companyId, onBack, onNewOrder, onNewCon
             <button onClick={markNoAnswer} title="Log a no answer now and set a call-back for 3 working days’ time"
               style={{ background: 'transparent', color: T.sub, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 12px', fontSize: 13, cursor: 'pointer' }}>
               <PhoneOff size={14} style={{ verticalAlign: -2, marginRight: 4 }} />No answer
+            </button>
+            <button onClick={markVoicemailLeft} title="Log “Voicemail left” with today’s date. Moves the company to Voicemail only if it has no stage yet"
+              style={{ background: 'transparent', color: T.sub, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 12px', fontSize: 13, cursor: 'pointer' }}>
+              <Phone size={14} style={{ verticalAlign: -2, marginRight: 4 }} />Voicemail left
             </button>
             <button onClick={() => fillQuickNote('Invalid number')} title="Fill the note box with “Invalid number” and today’s date"
               style={{ background: 'transparent', color: T.sub, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 12px', fontSize: 13, cursor: 'pointer' }}>
